@@ -1,7 +1,7 @@
 import bpy
 from mathutils import Vector
 from ..ydr.shader_materials import create_shader, create_tinted_shader_graph, obj_has_tint_mats, try_get_node
-from ..sollumz_properties import SollumType, MaterialType, LODLevel
+from ..sollumz_properties import SollumType, MaterialType, LODLevel, SollumzGame
 from ..tools.blenderhelper import create_empty_object, find_bsdf_and_material_output
 from ..cwxml.drawable import BonePropertiesManager, Drawable, DrawableModel, TextureShaderParameter, VectorShaderParameter
 from ..cwxml.shader import (
@@ -49,8 +49,8 @@ class MaterialConverter:
         for i in range(min(src_count, dst_count)):
             dst_node.set(i, src_node.get(i))
 
-    def convert_shader_to_shader(self, shader_name: str):
-        shader = ShaderManager.find_shader(shader_name)
+    def convert_shader_to_shader(self, shader_name: str, game: SollumType):
+        shader = ShaderManager.find_shader(shader_name, game)
         assert shader is not None
 
         for param in shader.parameters:
@@ -61,7 +61,9 @@ class MaterialConverter:
                       ShaderParameterType.FLOAT2 |
                       ShaderParameterType.FLOAT3 |
                       ShaderParameterType.FLOAT4 |
-                      ShaderParameterType.FLOAT4X4):
+                      ShaderParameterType.FLOAT4X4 |
+                      ShaderParameterType.SAMPLER |
+                      ShaderParameterType.CBUFFER):
                     self._convert_parameter_node(param)
                 case _:
                     raise Exception(f"Unknown shader parameter! {param.type=} {param.name=}")
@@ -109,8 +111,8 @@ class MaterialConverter:
         self.specular_node = self._get_specular_node()
         self.normal_node = self._get_normal_node()
 
-    def _create_new_material(self, shader_name):
-        self.new_material = create_shader(shader_name)
+    def _create_new_material(self, shader_name, game):
+        self.new_material = create_shader(shader_name, game)
 
     def _set_new_node_images(self):
         if self.new_material is None:
@@ -163,12 +165,12 @@ class MaterialConverter:
 
         return "default.sps"
 
-    def convert(self, shader_name: str) -> bpy.types.Material:
+    def convert(self, shader_name: str, game: SollumzGame) -> bpy.types.Material:
         """Convert the material to a Sollumz material of the provided shader name."""
-        self._create_new_material(shader_name)
+        self._create_new_material(shader_name, game)
 
         if self.material.sollum_type == MaterialType.SHADER:
-            self.convert_shader_to_shader(shader_name)
+            self.convert_shader_to_shader(shader_name, game)
         else:
             self._get_nodes()
             self._set_new_node_images()
@@ -202,20 +204,20 @@ def set_recommended_bone_properties(bone):
         flag.name = flag_name
 
 
-def convert_obj_to_drawable(obj: bpy.types.Object):
+def convert_obj_to_drawable(obj: bpy.types.Object, sollum_game_type: SollumzGame):
     drawable_obj = create_empty_object(SollumType.DRAWABLE)
     drawable_obj.location = obj.location
     drawable_obj.rotation_mode = obj.rotation_mode
     drawable_obj.rotation_euler = obj.rotation_euler
     drawable_obj.rotation_quaternion = obj.rotation_quaternion
     drawable_obj.rotation_axis_angle = obj.rotation_axis_angle
-
     obj_name = obj.name
 
-    convert_obj_to_model(obj)
+    convert_obj_to_model(obj, sollum_game_type)
     obj.name = f"{obj.name}.model"
     # Set drawable obj name after converting obj to a model to avoid .00# suffix
     drawable_obj.name = obj_name
+    drawable_obj.sollum_game_type = sollum_game_type
 
     drawable_obj.parent = obj.parent
     obj.parent = drawable_obj
@@ -227,21 +229,23 @@ def convert_obj_to_drawable(obj: bpy.types.Object):
     return drawable_obj
 
 
-def convert_objs_to_single_drawable(objs: list[bpy.types.Object]):
+def convert_objs_to_single_drawable(objs: list[bpy.types.Object], sollum_game_type: SollumzGame):
     drawable_obj = create_empty_object(SollumType.DRAWABLE)
 
     for obj in objs:
-        convert_obj_to_model(obj)
+        convert_obj_to_model(obj, sollum_game_type)
         obj.name = f"{obj.name}.model"
         obj.parent = drawable_obj
 
     return drawable_obj
 
 
-def convert_obj_to_model(obj: bpy.types.Object):
+def convert_obj_to_model(obj: bpy.types.Object, sollum_game_type: SollumzGame):
     obj.sollum_type = SollumType.DRAWABLE_MODEL
-    obj.sz_lods.get_lod(LODLevel.HIGH).mesh = obj.data
-    obj.sz_lods.active_lod_level = LODLevel.HIGH
+    obj.sollum_game_type = sollum_game_type
+    obj.sollumz_lods.add_empty_lods()
+    obj.sollumz_lods.set_lod_mesh(LODLevel.HIGH, obj.data)
+    obj.sollumz_lods.set_active_lod(LODLevel.HIGH)
 
 
 def center_drawable_to_models(drawable_obj: bpy.types.Object):

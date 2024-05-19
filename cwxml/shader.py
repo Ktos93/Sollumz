@@ -1,6 +1,8 @@
 import xml.etree.ElementTree as ET
 import os
 from abc import ABC, abstractmethod
+from ..cwxml.drawable_RDR import VERT_ATTR_DTYPES
+from ..sollumz_properties import SollumzGame
 from .element import (
     ElementTree,
     ListProperty,
@@ -12,6 +14,8 @@ from ..tools import jenkhash
 from typing import Optional
 from enum import Enum
 
+
+current_game = SollumzGame.GTA
 
 class FileNameList(ListProperty):
     class FileName(TextProperty):
@@ -36,6 +40,9 @@ class ShaderParameterType(str, Enum):
     FLOAT3 = "float3"
     FLOAT4 = "float4"
     FLOAT4X4 = "float4x4"
+    SAMPLER = "Sampler"
+    CBUFFER = "CBuffer"
+    UNKNOWN = "Unknown"
 
 
 class ShaderParameterSubtype(str, Enum):
@@ -56,8 +63,11 @@ class ShaderParameterDef(ElementTree, ABC):
         super().__init__()
         self.name = AttributeProperty("name")
         self.type = AttributeProperty("type", self.type)
-        self.subtype = AttributeProperty("subtype")
         self.hidden = AttributeProperty("hidden", False)
+        if current_game == SollumzGame.GTA:
+            self.subtype = AttributeProperty("subtype")
+        elif current_game == SollumzGame.RDR:
+            self.index = AttributeProperty("index")
 
 
 class ShaderParameterTextureDef(ShaderParameterDef):
@@ -66,6 +76,8 @@ class ShaderParameterTextureDef(ShaderParameterDef):
     def __init__(self):
         super().__init__()
         self.uv = AttributeProperty("uv")
+        if current_game == SollumzGame.RDR:
+            self.index = AttributeProperty("index", 0)
 
 
 class ShaderParameterFloatVectorDef(ShaderParameterDef, ABC):
@@ -123,6 +135,35 @@ class ShaderParameterFloat4x4Def(ShaderParameterDef):
         super().__init__()
 
 
+class ShaderParameterSamplerDef(ShaderParameterDef):
+    type = ShaderParameterType.SAMPLER
+
+    def __init__(self):
+        super().__init__()
+        self.x = AttributeProperty("sampler", 0)
+        self.index = AttributeProperty("index", 0)
+
+
+class ShaderParameterCBufferDef(ShaderParameterDef):
+    type = ShaderParameterType.CBUFFER
+
+    def __init__(self):
+        super().__init__()
+        self.buffer = AttributeProperty("buffer", 0)
+        self.length = AttributeProperty("length", 0)
+        self.offset = AttributeProperty("offset", 0)
+        self.value_type = AttributeProperty("value_type", "")
+        
+
+
+class ShaderParameteUnknownDef(ShaderParameterDef):
+    type = ShaderParameterType.UNKNOWN
+
+    def __init__(self):
+        super().__init__()
+
+
+
 class ShaderParameterDefsList(ListProperty):
     list_type = ShaderParameterDef
     tag_name = "Parameters"
@@ -130,7 +171,6 @@ class ShaderParameterDefsList(ListProperty):
     @staticmethod
     def from_xml(element: ET.Element):
         new = ShaderParameterDefsList()
-
         for child in element.iter():
             if "type" in child.attrib:
                 param_type = child.get("type")
@@ -147,6 +187,32 @@ class ShaderParameterDefsList(ListProperty):
                         param = ShaderParameterFloat4Def.from_xml(child)
                     case ShaderParameterType.FLOAT4X4:
                         param = ShaderParameterFloat4x4Def.from_xml(child)
+                    case ShaderParameterType.SAMPLER:
+                        param = ShaderParameterSamplerDef.from_xml(child)
+                    case ShaderParameterType.CBUFFER:
+                        param = ShaderParameterCBufferDef.from_xml(child)
+                        attribs = child.attrib
+                        match param.value_type:
+                            case ShaderParameterType.FLOAT:
+                                param.x = float(attribs["x"])
+                            case ShaderParameterType.FLOAT2:
+                                param.x = float(attribs["x"])
+                                param.y = float(attribs["y"])
+                            case ShaderParameterType.FLOAT3:
+                                param.x = float(attribs["x"])
+                                param.y = float(attribs["y"])
+                                param.z = float(attribs["z"])
+                            case ShaderParameterType.FLOAT4:
+                                if "count" in attribs:
+                                    param.count = int(attribs["count"])
+                                else:
+                                    param.count = 0
+                                    param.x = float(attribs["x"])
+                                    param.y = float(attribs["y"])
+                                    param.z = float(attribs["z"])
+                                    param.w = float(attribs["w"])
+                    case ShaderParameterType.UNKNOWN:
+                        param = ShaderParameteUnknownDef.from_xml(child)
                     case _:
                         assert False, f"Unknown shader parameter type '{param_type}'"
 
@@ -155,30 +221,78 @@ class ShaderParameterDefsList(ListProperty):
         return new
 
 
+class SemanticsList(ElementTree):
+    tag_name = "Semantics"
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.values = []
+
+    @staticmethod
+    def from_xml(element: ET.Element):
+        new = SemanticsList()
+        for child in element.findall("Item"):
+            new.values.append(child.text)
+        return new
+
+
 class ShaderDef(ElementTree):
     tag_name = "Item"
 
     render_bucket: int
+    buffer_size: []
     uv_maps: dict[str, int]
     parameter_map: dict[str, ShaderParameterDef]
     parameter_ui_order: dict[str, int]
 
     def __init__(self):
         super().__init__()
-        self.filename = TextProperty("Name", "")
-        self.layouts = LayoutList()
-        self.parameters = ShaderParameterDefsList("Parameters")
-        self.render_bucket = 0
-        self.uv_maps = {}
-        self.parameter_map = {}
-        self.parameter_ui_order = {}
+        if current_game == SollumzGame.RDR:
+            self.filename = TextProperty("Name")
+            self.render_bucket = 0
+            self.buffer_size = []
+            self.parameters = ShaderParameterDefsList("Params")
+            self.semantics = SemanticsList()
+            self.parameter_map = {}
+        elif current_game == SollumzGame.GTA:
+            self.filename = TextProperty("Name", "")
+            self.layouts = LayoutList()
+            self.parameters = ShaderParameterDefsList("Parameters")
+            self.render_bucket = 0
+            self.uv_maps = {}
+            self.parameter_map = {}
+            self.parameter_ui_order = {}
 
     @property
     def required_tangent(self):
-        for layout in self.layouts:
-            if "Tangent" in layout.value:
-                return True
-        return False
+        if current_game == SollumzGame.GTA:
+            for layout in self.layouts:
+                if "Tangent" in layout.value:
+                    return True
+            return False
+        elif current_game == SollumzGame.RDR:
+            tangents = set()
+            for semantic in self.semantics.values:
+                current_semantic = None
+                count = -1
+                for this_semantic in semantic:
+                    if current_semantic is None:
+                        current_semantic = this_semantic
+                    elif current_semantic != this_semantic:
+                        current_semantic = this_semantic
+                        count = -1
+                    
+                    entry = VERT_ATTR_DTYPES[this_semantic].copy()
+                    
+                    if count == -1 and entry[0] in ("Colour", "TexCoord"):
+                        entry[0] = entry[0] + "0"
+                    elif count >= 0:
+                        entry[0] = entry[0] + str(count+1)
+                    if "Tangent" in entry[0]:
+                        tangents.add(entry[0])
+                    count += 1
+            return tangents
+            
 
     @property
     def required_normal(self):
@@ -224,11 +338,31 @@ class ShaderDef(ElementTree):
 
 class ShaderManager:
     shaderxml = os.path.join(os.path.dirname(__file__), "Shaders.xml")
+    rdr_shaderxml = os.path.join(os.path.dirname(__file__), "ModRDRShaders.xml")
     # Map shader filenames to base shader names
     _shaders_base_names: dict[ShaderDef, str] = {}
     _shaders: dict[str, ShaderDef] = {}
     _shaders_by_hash: dict[int, ShaderDef] = {}
 
+    _rdr_shaders_base_names: dict[ShaderDef, str] = {}
+    _rdr_shaders: dict[str, ShaderDef] = {}
+    _rdr_shaders_by_hash: dict[int, ShaderDef] = {}
+
+    rdr_standard_2lyr = ["standard_2lyr", "standard_2lyr_ground", "standard_2lyr_pxm", "standard_2lyr_pxm_ground", "standard_2lyr_tnt", 
+            "campfire_standard_2lyr"]
+    
+    rdr_terrains = ["terrain_uber_4lyr_pxm_hbb", "terrain_uber_4lyr_spx_dm_hbb", "terrain_uber_4lyr_snow_dm_hbb", 
+                    "terrain_uber_4lyr", "terrain_uber_4lyr_hbb", "terrain_uber_4lyr_mud", 
+                    "terrain_uber_4lyr_mud_dm_hbb", "terrain_uber_4lyr_pxm", "terrain_uber_4lyr_quicksand_dm_hbb", 
+                    "terrain_uber_4lyr_snowglt_pxm_hbb", "terrain_uber_4lyr_snowglt_spx_dm_hbb", 
+                    "terrain_uber_4lyr_spx_dm_hbb_1221", "terrain_uber_4lyr_spx_dm_hbb_2111", 
+                    "terrain_uber_4lyr_spx_dm_hbb_2221", "terrain_uber_3+1lyr_snow_dm_hbb", 
+                    "terrain_uber_4lyr_spx_dm_hbb_1111", "terrain_uber_4lyr_spx_dm_hbb_1121"]
+
+    rdr_standard_alphas = ["standard_dirt_alpha"]
+    rdr_standard_glasses = ["standard_glass_breakable", "standard_glass_fp", "standard_glass"]
+    rdr_standard_decals = ["standard_decal_blend" , "standard_decal", "standard_decal_ground", "standard_decal_hbb","standard_decal_heightmap", 
+              "standard_decal_normal_only" , "standard_decal_tnt"]
     terrains = ["terrain_cb_w_4lyr.sps", "terrain_cb_w_4lyr_lod.sps", "terrain_cb_w_4lyr_spec.sps", "terrain_cb_w_4lyr_spec_pxm.sps", "terrain_cb_w_4lyr_pxm_spm.sps",
                 "terrain_cb_w_4lyr_pxm.sps", "terrain_cb_w_4lyr_cm_pxm.sps", "terrain_cb_w_4lyr_cm_tnt.sps", "terrain_cb_w_4lyr_cm_pxm_tnt.sps", "terrain_cb_w_4lyr_cm.sps",
                 "terrain_cb_w_4lyr_2tex.sps", "terrain_cb_w_4lyr_2tex_blend.sps", "terrain_cb_w_4lyr_2tex_blend_lod.sps", "terrain_cb_w_4lyr_2tex_blend_pxm.sps",
@@ -271,15 +405,18 @@ class ShaderManager:
                   "vehicle_paint9.sps",]
 
     def tinted_shaders():
-        return ShaderManager.cutouts + ShaderManager.alphas + ShaderManager.glasses + ShaderManager.decals + ShaderManager.veh_cutouts + ShaderManager.veh_glasses + ShaderManager.veh_decals + ShaderManager.shadow_proxies
+        return ShaderManager.cutouts + ShaderManager.alphas + ShaderManager.glasses + ShaderManager.decals + ShaderManager.veh_cutouts + ShaderManager.veh_glasses + ShaderManager.veh_decals + ShaderManager.shadow_proxies + ShaderManager.rdr_standard_decals + ShaderManager.rdr_standard_glasses + ShaderManager.rdr_standard_alphas
 
     def cutout_shaders():
         return ShaderManager.cutouts + ShaderManager.veh_cutouts + ShaderManager.shadow_proxies
 
     @staticmethod
     def load_shaders():
+        global current_game
         tree = ET.parse(ShaderManager.shaderxml)
+        rdrtree = ET.parse(ShaderManager.rdr_shaderxml)
 
+        current_game = SollumzGame.GTA
         for node in tree.getroot():
             base_name = node.find("Name").text
             for filename_elem in node.findall("./FileName//*"):
@@ -297,21 +434,54 @@ class ShaderManager:
                 ShaderManager._shaders[filename] = shader
                 ShaderManager._shaders_by_hash[filename_hash] = shader
                 ShaderManager._shaders_base_names[shader] = base_name
+        
+        current_game = SollumzGame.RDR
+        for node in rdrtree.getroot():
+            base_name = node.find("Name").text
+
+            filename_hash = jenkhash.Generate(base_name)
+            render_bucket = node.find("DrawBucket").text.split(" ")
+            if len(render_bucket) == 1:
+                render_bucket = int(render_bucket[0])
+            else:
+                render_bucket = [int(x) for x in render_bucket]
+            
+            buffer_size = node.find("BufferSizes").text
+            if buffer_size != None:
+                buffer_size = [int(x) for x in node.find("BufferSizes").text.split(" ")]
+
+            shader = ShaderDef.from_xml(node)
+            shader.filename = base_name
+            shader.render_bucket = render_bucket
+            shader.buffer_size = buffer_size
+            ShaderManager._rdr_shaders[base_name] = shader
+            ShaderManager._rdr_shaders_by_hash[filename_hash] = shader
+            ShaderManager._rdr_shaders_base_names[shader] = base_name
+        print("\Loaded total RDR shaders:", len(ShaderManager._rdr_shaders))
+        print("\Loaded total GTA shaders:", len(ShaderManager._shaders))
+
 
     @staticmethod
-    def find_shader(filename: str) -> Optional[ShaderDef]:
-        shader = ShaderManager._shaders.get(filename, None)
+    def find_shader(filename: str, game: SollumzGame = SollumzGame.GTA) -> Optional[ShaderDef]:
+        shader = None
+        if game == SollumzGame.GTA:
+            shader = ShaderManager._shaders.get(filename, None)
+        elif game == SollumzGame.RDR:
+            shader = ShaderManager._rdr_shaders.get(filename, None)
         if shader is None and filename.startswith("hash_"):
             filename_hash = int(filename[5:], 16)
             shader = ShaderManager._shaders_by_hash.get(filename_hash, None)
         return shader
 
     @staticmethod
-    def find_shader_base_name(filename: str) -> Optional[str]:
-        shader = ShaderManager.find_shader(filename)
+    def find_shader_base_name(filename: str, game) -> Optional[str]:
+        shader = ShaderManager.find_shader(filename, game)
         if shader is None:
             return None
-        return ShaderManager._shaders_base_names[shader]
+        if game == SollumzGame.GTA:
+            return ShaderManager._shaders_base_names[shader]
+        elif game == SollumzGame.RDR:
+            return ShaderManager._rdr_shaders_base_names[shader]
 
 
 ShaderManager.load_shaders()

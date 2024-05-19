@@ -12,11 +12,9 @@ class SOLLUMZ_OT_create_ymap(SOLLUMZ_OT_base, bpy.types.Operator):
 
     def run(self, context):
         ymap_obj = create_ymap()
-        if ymap_obj:
-            bpy.ops.object.select_all(action='DESELECT')
-            ymap_obj.select_set(True)
-            context.view_layer.objects.active = ymap_obj
-        return {"FINISHED"}
+        context.view_layer.objects.active = bpy.data.objects[ymap_obj.name]
+        ymap_obj.select_set(True)
+        return True
 
 
 class SOLLUMZ_OT_create_entity_group(SOLLUMZ_OT_base, bpy.types.Operator):
@@ -28,9 +26,6 @@ class SOLLUMZ_OT_create_entity_group(SOLLUMZ_OT_base, bpy.types.Operator):
     @classmethod
     def poll(cls, context):
         aobj = context.active_object
-        if aobj is None:
-            return False
-
         existing_groups = []
         # Do not let user create Entities Group if there is already one, and if there is any kind of Occlusion Group
         for child in aobj.children:
@@ -43,7 +38,6 @@ class SOLLUMZ_OT_create_entity_group(SOLLUMZ_OT_base, bpy.types.Operator):
     def run(self, context):
         ymap_obj = context.active_object
         create_ymap_group(sollum_type=SollumType.YMAP_ENTITY_GROUP, selected_ymap=ymap_obj, empty_name='Entities')
-        # TODO: Find a way to use "bpy.ops.outliner.show_active()" to show the new object in outliner. But we are in wrong context here.
         return True
 
 
@@ -56,9 +50,6 @@ class SOLLUMZ_OT_create_model_occluder_group(SOLLUMZ_OT_base, bpy.types.Operator
     @classmethod
     def poll(cls, context):
         aobj = context.active_object
-        if aobj is None:
-            return False
-
         existing_groups = []
         # Do not let user create Model Occluders Group if there is already one, and if there is already Entities Group
         for child in aobj.children:
@@ -83,9 +74,6 @@ class SOLLUMZ_OT_create_box_occluder_group(SOLLUMZ_OT_base, bpy.types.Operator):
     @classmethod
     def poll(cls, context):
         aobj = context.active_object
-        if aobj is None:
-            return False
-
         existing_groups = []
         # Do not let user create Box Occluders Group if there is already one, and if there is already Entities Group
         for child in aobj.children:
@@ -110,9 +98,6 @@ class SOLLUMZ_OT_create_car_generator_group(SOLLUMZ_OT_base, bpy.types.Operator)
     @classmethod
     def poll(cls, context):
         aobj = context.active_object
-        if aobj is None:
-            return False
-
         existing_groups = []
         for child in aobj.children:
             existing_groups.append(child.name)
@@ -141,10 +126,6 @@ class SOLLUMZ_OT_create_box_occluder(SOLLUMZ_OT_base, bpy.types.Operator):
         box_obj.name = "Box"
         box_obj.active_material = add_occluder_material(SollumType.YMAP_BOX_OCCLUDER)
         box_obj.parent = group_obj
-
-        # Prevent rotation on X and Y axis, since only Z axis is supported on Box Occluders
-        box_obj.lock_rotation[0] = True
-        box_obj.lock_rotation[1] = True
 
         return True
 
@@ -195,14 +176,5 @@ class SOLLUMZ_OT_create_car_generator(SOLLUMZ_OT_base, bpy.types.Operator):
         bpy.context.collection.objects.link(cargen_obj)
         bpy.context.view_layer.objects.active = cargen_obj
         cargen_obj.parent = group_obj
-
-        # Prevent rotation on X and Y axis, since only Z axis is supported on Box Occluders
-        cargen_obj.lock_rotation[0] = True
-        cargen_obj.lock_rotation[1] = True
-
-        # Select the cargen object
-        bpy.ops.object.select_all(action='DESELECT')
-        cargen_obj.select_set(True)
-        context.view_layer.objects.active = cargen_obj
 
         return True

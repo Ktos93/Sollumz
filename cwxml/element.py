@@ -7,6 +7,15 @@ from xml.etree import ElementTree as ET
 from numpy import float32
 
 
+def remove_elements_with_no_attributes(elem):
+    for child in elem:
+        remove_elements_with_no_attributes(child)
+        
+        if child.text or len(child.attrib) > 0:
+            continue
+        elem.remove(child)
+
+
 def indent(elem: ET.Element, level=0):
     """Custom indentation to get elements like <VerticesProperty /> to output nicely"""
     amount = "  "
@@ -87,6 +96,7 @@ class Element(AbstractClass):
         element = self.to_xml()
         indent(element)
         elementTree = ET.ElementTree(element)
+        remove_elements_with_no_attributes(elementTree.getroot())
         elementTree.write(filepath, encoding="UTF-8", xml_declaration=True)
 
 

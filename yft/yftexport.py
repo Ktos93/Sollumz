@@ -223,21 +223,19 @@ def remove_non_hi_lods(drawable_obj: bpy.types.Object):
         if model_obj.sollum_type != SollumType.DRAWABLE_MODEL:
             continue
 
-        lods = model_obj.sz_lods
-        very_high_lod = lods.get_lod(LODLevel.VERYHIGH)
+        very_high_lod = model_obj.sollumz_lods.get_lod(LODLevel.VERYHIGH)
 
-        if very_high_lod.mesh is None:
+        if very_high_lod is None or very_high_lod.mesh is None:
             bpy.data.objects.remove(model_obj)
             continue
 
-        lods.get_lod(LODLevel.HIGH).mesh = very_high_lod.mesh
-        lods.active_lod_level = LODLevel.HIGH
+        lod_props = model_obj.sollumz_lods
 
-        for lod_level in LODLevel:
-            if lod_level == LODLevel.HIGH:
-                continue
-            lod = lods.get_lod(lod_level)
-            if lod.mesh is not None:
+        lod_props.set_lod_mesh(LODLevel.HIGH, very_high_lod.mesh)
+        lod_props.set_active_lod(LODLevel.HIGH)
+
+        for lod in lod_props.lods:
+            if lod.level != LODLevel.HIGH and lod.mesh is not None:
                 lod.mesh = None
 
 
@@ -262,9 +260,9 @@ def has_hi_lods(frag_obj: bpy.types.Object):
         if child.sollum_type != SollumType.DRAWABLE_MODEL and not child.sollumz_is_physics_child_mesh:
             continue
 
-        very_high_lod = child.sz_lods.get_lod(LODLevel.VERYHIGH)
-        if very_high_lod.mesh is not None:
-            return True
+        for lod in child.sollumz_lods.lods:
+            if lod.level == LODLevel.VERYHIGH and lod.mesh is not None:
+                return True
 
     return False
 
@@ -701,17 +699,14 @@ def create_phys_child_drawable(child_xml: PhysicsChild, materials: list[bpy.type
         scale = get_scale_to_apply_to_bound(obj)
         transforms_to_apply = Matrix.Diagonal(scale).to_4x4()
 
-        lods = obj.sz_lods
-        for lod_level in LODLevel:
-            if lod_level == LODLevel.VERYHIGH:
-                continue
-            lod_mesh = lods.get_lod(lod_level).mesh
-            if lod_mesh is None:
+        for lod in obj.sollumz_lods.lods:
+            if lod.mesh is None or lod.level == LODLevel.VERYHIGH:
                 continue
 
-            model_xml = create_model_xml(obj, lod_level, materials, transforms_to_apply=transforms_to_apply)
+            model_xml = create_model_xml(
+                obj, lod.level, materials, transforms_to_apply=transforms_to_apply)
             model_xml.bone_index = 0
-            append_model_xml(drawable_xml, model_xml, lod_level)
+            append_model_xml(drawable_xml, model_xml, lod.level)
 
     set_drawable_xml_extents(drawable_xml)
 
@@ -1020,7 +1015,6 @@ def add_frag_glass_window_xml(
         logger.warning(f"Glass window '{group_xml.name}' requires 2 separate planes in mesh.")
         if len(mesh_planes) < 2:
             return  # need at least 2 planes to continue
-
     plane_a, plane_b = mesh_planes[:2]
     if len(plane_a) != 2 or len(plane_b) != 2:
         logger.warning(f"Glass window '{group_xml.name}' mesh planes need to be made up of 2 triangles each.")
@@ -1139,7 +1133,6 @@ def calc_frag_glass_window_bounds_offset(
     Returns tuple (offset_front, offset_back).
     """
     from mathutils.geometry import distance_point_to_plane, normal
-
     def _get_plane(a: Vector, b: Vector, c: Vector, d: Vector):
         plane_no = normal((a, b, c))
         plane_co = a

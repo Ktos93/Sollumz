@@ -1,3 +1,5 @@
+from ..cwxml.drawable_RDR import VERT_ATTR_DTYPES
+from ..sollumz_properties import SollumzGame
 import bpy
 import numpy as np
 from numpy.typing import NDArray
@@ -7,10 +9,13 @@ from ..tools.meshhelper import flip_uvs
 from ..cwxml.drawable import VertexBuffer
 
 
-def get_bone_by_vgroup(vgroups: bpy.types.VertexGroups, bones: list[bpy.types.Bone]):
-    bone_ind_by_name: dict[str, int] = {b.name: i for i, b in enumerate(bones)}
+current_game = SollumzGame.GTA
 
-    return {i: bone_ind_by_name[group.name] if group.name in bone_ind_by_name else -1 for i, group in enumerate(vgroups)}
+def get_bone_by_vgroup(vgroups: bpy.types.VertexGroups, bones: list[bpy.types.Bone]):
+    bone_ind_by_name: dict[str, int] = {
+        b.name: i for i, b in enumerate(bones)}
+
+    return {i: bone_ind_by_name[group.name] if group.name in bone_ind_by_name else 0 for i, group in enumerate(vgroups)}
 
 
 def remove_arr_field(name: str, vertex_arr: NDArray):
@@ -44,25 +49,10 @@ def remove_unused_uvs(vertex_arr: NDArray, used_texcoords: set[str]) -> NDArray:
 
 def dedupe_and_get_indices(vertex_arr: NDArray) -> Tuple[NDArray, NDArray[np.uint32]]:
     """Remove duplicate vertices from the buffer and get the new vertex indices in triangle order (used for IndexBuffer). Returns vertices, indices."""
+    vertex_arr, unique_indices, inverse_indices = np.unique(
+        vertex_arr, axis=0, return_index=True, return_inverse=True)
 
-    # Cannot use np.unique directly on the vertex array because it doesn't have a tolerance parameter, only checks exact
-    # equality, so floating-point values that are only different due to rounding errors would not be deduplicated.
-    # For example, normals calculated by Blender for the same vertex in different loops end up slightly different from
-    # rounding errors, causing this vertex to appear multiple times on export.
-    # So we first round the values in the vertex array and then pass it to np.unique.
-
-    # Convert vertex array to a 2D unstructured array of float64 to be able to use np.round, it doesn't work on the
-    # structured array.
-    # Each vertex is converted to a float64 array by concatenating the struct fields: [x, y, z, nx, ny, nz, r, g, b, a, ...]
-    vertex_arr_flatten = np.concatenate([vertex_arr[name] for name in vertex_arr.dtype.names], axis=1, dtype=np.float64)
-    np.round(vertex_arr_flatten, out=vertex_arr_flatten, decimals=6)
-
-    _, unique_indices, inverse_indices = np.unique(vertex_arr_flatten, axis=0, return_index=True, return_inverse=True)
-
-    # Lookup the vertices in the original structured and un-rounded array
-    vertex_arr = vertex_arr[unique_indices]
-    index_arr = np.asarray(inverse_indices, dtype=np.uint32)
-    return vertex_arr, index_arr
+    return vertex_arr, np.arange(len(unique_indices), dtype=np.uint32)[inverse_indices]
 
 
 class VertexBufferBuilder:
@@ -79,13 +69,13 @@ class VertexBufferBuilder:
 
         self._vert_inds = vert_inds
 
-    def build(self):
+    def build(self, game: SollumzGame = SollumzGame.GTA):
+        global current_game
+        current_game = game
         if not self.mesh.loop_triangles:
             self.mesh.calc_loop_triangles()
 
-        if bpy.app.version < (4, 1, 0):
-            # needed to fill mesh loops normals with custom split normals pre-4.1
-            self.mesh.calc_normals_split()
+        self.mesh.calc_normals_split()
 
         mesh_attrs = self._collect_attrs()
         return self._structured_array_from_attrs(mesh_attrs)
@@ -96,13 +86,25 @@ class VertexBufferBuilder:
 
         mesh_attrs["Position"] = self._get_positions()
 
-        if self._has_weights:
-            blend_weights, blend_indices = self._get_weights_indices()
-
-            mesh_attrs["BlendWeights"] = blend_weights
-            mesh_attrs["BlendIndices"] = blend_indices
-
         mesh_attrs["Normal"] = self._get_normals()
+
+        mesh_attrs["Tangent"] = self._get_tangents()
+
+        if self._has_weights:
+            
+            data = self._get_weights_indices()
+
+            mesh_attrs["BlendWeights"] = data[0]
+            if current_game == SollumzGame.RDR:
+                mesh_attrs["BlendWeights1"] = data[2]
+            
+            mesh_attrs["BlendIndices"] = data[1]
+            if current_game == SollumzGame.RDR:
+                mesh_attrs["BlendIndices1"] = data[3]
+
+        if current_game == SollumzGame.RDR:
+            mesh_attrs["Tangent1"] = mesh_attrs["Tangent"].copy()
+            mesh_attrs["Tangent2"] = mesh_attrs["Tangent"].copy()
 
         colors = self._get_colors()
 
@@ -114,16 +116,24 @@ class VertexBufferBuilder:
         for i, uv in enumerate(uvs):
             mesh_attrs[f"TexCoord{i}"] = uv
 
-        mesh_attrs["Tangent"] = self._get_tangents()
-
         return mesh_attrs
 
     def _structured_array_from_attrs(self, mesh_attrs: dict[str, NDArray]):
         """Combine ``mesh_attrs`` into single structured array."""
         # Data type for vertex data structured array
-        struct_dtype = [VertexBuffer.VERT_ATTR_DTYPES[attr_name]
+        if current_game == SollumzGame.GTA:
+            struct_dtype = [VertexBuffer.VERT_ATTR_DTYPES[attr_name]
                         for attr_name in mesh_attrs]
-
+        elif current_game == SollumzGame.RDR:
+            struct_dtype = []
+            for attr_name in mesh_attrs:
+                for val_list in VERT_ATTR_DTYPES.values():
+                    if val_list[0] in attr_name:
+                        item = val_list.copy()
+                        item[0] = attr_name
+                        item = tuple(item)
+                        struct_dtype.append(item)
+                        break
         vertex_arr = np.empty(len(self._vert_inds), dtype=struct_dtype)
 
         for attr_name, arr in mesh_attrs.items():
@@ -141,49 +151,59 @@ class VertexBufferBuilder:
     def _get_normals(self):
         normals = np.empty(len(self.mesh.loops) * 3, dtype=np.float32)
         self.mesh.loops.foreach_get("normal", normals)
-        return np.reshape(normals, (len(self.mesh.loops), 3))
+
+        if current_game == SollumzGame.GTA:
+            return np.reshape(normals, (len(self.mesh.loops), 3))
+
+        elif current_game == SollumzGame.RDR:
+            processed_normal = np.zeros((len(self.mesh.loops), 4), dtype=np.float32)
+            processed_normal[:, :3] = np.reshape(normals, (len(self.mesh.loops), 3))
+            condition = processed_normal[:, 2] < 0
+            processed_normal[:, 3] = np.where(condition, -1, 0)
+            return processed_normal
 
     def _get_weights_indices(self) -> Tuple[NDArray[np.uint32], NDArray[np.uint32]]:
         """Get all BlendWeights and BlendIndices."""
         num_verts = len(self.mesh.vertices)
         bone_by_vgroup = self._bone_by_vgroup
 
-        ind_arr = np.zeros((num_verts, 4), dtype=np.uint32)
-        weights_arr = np.zeros((num_verts, 4), dtype=np.float32)
+        if current_game == SollumzGame.GTA:
+            ind_arr = np.zeros((num_verts, 4), dtype=np.uint32)
+            weights_arr = np.zeros((num_verts, 4), dtype=np.float32)
+        elif current_game == SollumzGame.RDR:
+            ind_arr = np.zeros((num_verts, 8), dtype=np.uint32)
+            weights_arr = np.zeros((num_verts, 8), dtype=np.float32)
 
         for i, vert in enumerate(self.mesh.vertices):
-            groups = self._get_sorted_vertex_group_elements(vert)
-            for j, grp in enumerate(groups):
-                if j > 3:
+            for j, grp in enumerate(vert.groups):
+                if j < 4:
+                    weights_arr[i][j] = grp.weight
+                    if current_game == SollumzGame.GTA:
+                        ind_arr[i][j] = bone_by_vgroup[grp.group]
+                    elif current_game == SollumzGame.RDR:
+                        ind_arr[i][j] = grp.group
+                elif current_game == SollumzGame.RDR and j >= 4 and j < 8:
+                    weights_arr[i][j] = grp.weight
+                    ind_arr[i][j] = grp.group
+                else:
                     break
-
-                weights_arr[i][j] = grp.weight
-                ind_arr[i][j] = bone_by_vgroup[grp.group]
-
-        weights_arr = self._normalize_weights(weights_arr)
-        weights_arr, ind_arr = self._sort_weights_inds(weights_arr, ind_arr)
+        
+        if current_game == SollumzGame.GTA:
+            weights_arr = self._normalize_weights(weights_arr)
+            weights_arr, ind_arr = self._sort_weights_inds(weights_arr, ind_arr)
+        elif current_game == SollumzGame.RDR:
+            normalized_weights = self._normalize_weights(weights_arr)
+            weights_arr, weights_arr2 = np.hsplit(normalized_weights, 2)
+            ind_arr, ind_arr2 = np.hsplit(ind_arr, 2)
 
         weights_arr = self._convert_to_int_range(weights_arr)
-        weights_arr = self._renormalize_converted_weights(weights_arr)
+        weights_arr2 = self._convert_to_int_range(weights_arr2)
 
         # Return on loop domain
-        return weights_arr[self._vert_inds], ind_arr[self._vert_inds]
-
-    def _get_sorted_vertex_group_elements(self, vertex: bpy.types.MeshVertex) -> list[bpy.types.VertexGroupElement]:
-        elements = []
-        bone_by_vgroup = self._bone_by_vgroup
-        for element in vertex.groups:
-            bone_index = bone_by_vgroup.get(element.group, -1)
-
-            # skip the group that doesn't have a corresponding bone
-            if bone_index == -1:
-                continue
-
-            elements.append(element)
-
-        # sort by weight so the groups with less influence are to be ignored
-        elements = sorted(elements, reverse=True, key=lambda e: e.weight)
-        return elements
+        if current_game == SollumzGame.GTA:
+            return [weights_arr[self._vert_inds], ind_arr[self._vert_inds]]
+        elif current_game == SollumzGame.RDR:
+            return [weights_arr[self._vert_inds], ind_arr[self._vert_inds], weights_arr2[self._vert_inds], ind_arr2[self._vert_inds]]
 
     def _sort_weights_inds(self, weights_arr: NDArray[np.float32], ind_arr: NDArray[np.uint32]):
         """Sort BlendWeights and BlendIndices."""
@@ -208,18 +228,6 @@ class VertexBufferBuilder:
         """Convert float array from range 0-1 to range 0-255"""
         return (np.rint(arr * 255)).astype(np.uint32)
 
-    def _renormalize_converted_weights(self, weights_arr: NDArray[np.uint32]) -> NDArray[np.uint32]:
-        """Re-normalize converted weights to ensure their sum to be 255."""
-        row_sums = weights_arr.sum(axis=1, keepdims=True)
-        to_be_subtracted = np.full_like(row_sums, 255, dtype=np.int32)
-        deltas = np.subtract(to_be_subtracted, row_sums)
-        max_indices = weights_arr.argmax(axis=1, keepdims=True)
-        max_values = weights_arr.max(axis=1, keepdims=True)
-        normalized_max_values = np.add(max_values, deltas)
-        result = np.copy(weights_arr)
-        np.put_along_axis(result, max_indices, normalized_max_values, axis=1)
-        return result
-
     def _get_colors(self) -> list[NDArray[np.uint32]]:
         num_loops = len(self.mesh.loops)
 
@@ -233,8 +241,9 @@ class VertexBufferBuilder:
                     not attr.name.startswith("."))
 
         color_attrs = [attr for attr in self.mesh.color_attributes if _is_valid_color_attr(attr)]
-        # Maximum of 2 color attributes for GTAV shaders
-        color_attrs = color_attrs[:2]
+        if current_game == SollumzGame.GTA:
+            # Maximum of 2 color attributes for GTAV shaders
+            color_attrs = color_attrs[:2]
 
         # Always have at least 1 color layer
         if len(color_attrs) == 0:
@@ -286,6 +295,9 @@ class VertexBufferBuilder:
         mesh.loops.foreach_get("bitangent_sign", bitangent_signs)
 
         tangents = np.reshape(tangents, (num_loops, 3))
+        
         bitangent_signs = np.reshape(bitangent_signs, (-1, 1))
-
-        return np.concatenate((tangents, bitangent_signs), axis=1)
+        if current_game == SollumzGame.GTA:
+            return np.concatenate((tangents, bitangent_signs), axis=1)
+        elif current_game == SollumzGame.RDR:
+            return np.concatenate((tangents, bitangent_signs * -1), axis=1)

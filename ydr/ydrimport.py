@@ -3,13 +3,12 @@ import traceback
 import bpy
 from typing import Optional
 from mathutils import Matrix
-from pathlib import Path
 from ..tools.drawablehelper import get_model_xmls_by_lod
 from .shader_materials import create_shader, get_detail_extra_sampler, create_tinted_shader_graph
-from ..ybn.ybnimport import create_bound_composite, create_bound_object
-from ..sollumz_properties import TextureFormat, TextureUsage, SollumType, SOLLUMZ_UI_NAMES
+from ..ybn.ybnimport import create_bound_composite, create_bound_object, create_rdr_bound
+from ..sollumz_properties import SollumzGame, TextureFormat, TextureUsage, SollumType, SOLLUMZ_UI_NAMES
 from ..sollumz_preferences import get_addon_preferences, get_import_settings
-from ..cwxml.drawable import YDR, BoneLimit, Joints, Shader, ShaderGroup, Drawable, Bone, Skeleton, RotationLimit, DrawableModel
+from ..cwxml.drawable import YDR, BoneLimit, Joints, LodList, Shader, ShaderGroup, Drawable, Bone, Skeleton, RotationLimit, DrawableModel
 from ..cwxml.bound import BoundChild
 from ..tools.blenderhelper import add_child_of_bone_constraint, create_empty_object, create_blender_object, join_objects, add_armature_modifier, parent_objs
 from ..tools.utils import get_filename
@@ -23,20 +22,24 @@ from .render_bucket import RenderBucket
 from .. import logger
 
 
+current_game = SollumzGame.GTA
+
 def import_ydr(filepath: str):
     import_settings = get_import_settings()
 
     name = get_filename(filepath)
     ydr_xml = YDR.from_xml_file(filepath)
-
+    
     if import_settings.import_as_asset:
         return create_drawable_as_asset(ydr_xml, name, filepath)
 
-    return create_drawable_obj(ydr_xml, filepath, name)
+    return create_drawable_obj(ydr_xml, filepath, name, game=ydr_xml.game)
 
 
-def create_drawable_obj(drawable_xml: Drawable, filepath: str, name: Optional[str] = None, split_by_group: bool = False, external_armature: Optional[bpy.types.Object] = None, external_bones: Optional[list[Bone]] = None, materials: Optional[list[bpy.types.Material]] = None):
+def create_drawable_obj(drawable_xml: Drawable, filepath: str, name: Optional[str] = None, split_by_group: bool = False, external_armature: Optional[bpy.types.Object] = None, external_bones: Optional[list[Bone]] = None, materials: Optional[list[bpy.types.Material]] = None, game: SollumzGame = SollumzGame.GTA):
     """Create a drawable object. ``split_by_group`` will split each Drawable Model by vertex group. ``external_armature`` allows for bones to be rigged to an armature object that is not the parent drawable."""
+    global current_game
+    current_game = game
     name = name or drawable_xml.name
     materials = materials or shadergroup_to_materials(
         drawable_xml.shader_group, filepath)
@@ -83,12 +86,16 @@ def create_rigged_drawable_models(drawable_xml: Drawable, materials: list[bpy.ty
         drawable_xml) if not split_by_group else get_model_data_split_by_group(drawable_xml)
 
     set_skinned_model_properties(drawable_obj, drawable_xml)
+    models = []
+    for model_data in model_datas:
+        model = create_rigged_model_obj(model_data, materials, armature_obj)
+        models.append(model)
 
-    return [create_rigged_model_obj(model_data, materials, armature_obj) for model_data in model_datas]
+    return models
 
 
 def create_model_obj(model_data: ModelData, materials: list[bpy.types.Material], name: str, bones: Optional[list[bpy.types.Bone]] = None):
-    model_obj = create_blender_object(SollumType.DRAWABLE_MODEL, name)
+    model_obj = create_blender_object(SollumType.DRAWABLE_MODEL, name, None, current_game)
     create_lod_meshes(model_data, model_obj, materials, bones)
     create_tinted_shader_graph(model_obj)
 
@@ -111,9 +118,10 @@ def create_rigged_model_obj(model_data: ModelData, materials: list[bpy.types.Mat
 
 
 def create_lod_meshes(model_data: ModelData, model_obj: bpy.types.Object, materials: list[bpy.types.Material], bones: Optional[list[bpy.types.Bone]] = None):
-    lods: LODLevels = model_obj.sz_lods
+    lod_levels: LODLevels = model_obj.sollumz_lods
     original_mesh = model_obj.data
 
+    lod_levels.add_empty_lods()
     for lod_level, mesh_data in model_data.mesh_data_lods.items():
         mesh_name = f"{model_obj.name}_{SOLLUMZ_UI_NAMES[lod_level].lower().replace(' ', '_')}"
 
@@ -126,23 +134,26 @@ def create_lod_meshes(model_data: ModelData, model_obj: bpy.types.Object, materi
                 materials
             )
 
-            lod_mesh = mesh_builder.build()
+            lod_mesh = mesh_builder.build(current_game)
         except:
             logger.error(
                 f"Error occured during creation of mesh '{mesh_name}'! Is the mesh data valid?\n{traceback.format_exc()}")
             continue
 
-        lods.get_lod(lod_level).mesh = lod_mesh
-        lods.active_lod_level = lod_level
+        lod_levels.set_lod_mesh(lod_level, lod_mesh)
+        lod_levels.set_active_lod(lod_level)
 
-        set_drawable_model_properties(lod_mesh.drawable_model_properties, model_data.xml_lods[lod_level])
+        set_drawable_model_properties(
+            lod_mesh.drawable_model_properties, model_data.xml_lods[lod_level])
 
         is_skinned = "BlendWeights" in mesh_data.vert_arr.dtype.names
 
         if is_skinned and bones is not None:
-            mesh_builder.create_vertex_groups(model_obj, bones)
-
-    lods.set_highest_lod_active()
+            bonemapping = None
+            if current_game == SollumzGame.RDR:
+                bonemapping = model_data.bone_mapping[lod_level]
+            mesh_builder.create_vertex_groups(model_obj, bones, current_game, bonemapping)
+    lod_levels.set_highest_lod_active()
 
     # Original mesh no longer used since the obj is managed by LODs, so delete it
     if model_obj.data != original_mesh:
@@ -152,6 +163,10 @@ def create_lod_meshes(model_data: ModelData, model_obj: bpy.types.Object, materi
 def set_skinned_model_properties(drawable_obj: bpy.types.Object, drawable_xml: Drawable):
     """Set drawable model properties for the skinned ``DrawableModel`` (only ever 1 skinned model per ``Drawable``)."""
     for lod_level, models in get_model_xmls_by_lod(drawable_xml).items():
+        if current_game == SollumzGame.RDR and isinstance(models, LodList):
+            models = models.models
+        if models is None:
+            continue
         for model_xml in models:
             if model_xml.has_skin == 0:
                 continue
@@ -167,32 +182,35 @@ def set_lod_model_properties(model_objs: list[bpy.types.Object], drawable_xml: D
     for lod_level, models in get_model_xmls_by_lod(drawable_xml).items():
         for i, model_xml in enumerate(models):
             obj = model_objs[i]
-            obj_lods: LODLevels = obj.sz_lods
+            obj_lods: LODLevels = obj.sollumz_lods
             lod = obj_lods.get_lod(lod_level)
-            lod_mesh = lod.mesh
-            if lod_mesh is None:
+
+            if lod.mesh is None:
                 continue
 
-            set_drawable_model_properties(lod_mesh.drawable_model_properties, model_xml[lod.level])
+            set_drawable_model_properties(
+                lod.mesh.drawable_model_properties, model_xml[lod.level])
 
 
 def set_drawable_model_properties(model_props: DrawableModelProperties, model_xml: DrawableModel):
-    model_props.render_mask = model_xml.render_mask
+    if current_game == SollumzGame.GTA:
+        model_props.render_mask = model_xml.render_mask
 
 
 def create_drawable_armature(drawable_xml: Drawable, name: str):
     drawable_obj = create_armature_obj_from_skel(
-        drawable_xml.skeleton, name, SollumType.DRAWABLE)
-    create_joint_constraints(drawable_obj, drawable_xml.joints)
+        drawable_xml, name, SollumType.DRAWABLE)
+    if current_game == SollumzGame.GTA:
+        create_joint_constraints(drawable_obj, drawable_xml.joints)
 
-    set_drawable_properties(drawable_obj, drawable_xml)
+    set_drawable_properties(drawable_obj, drawable_xml, True)
 
     return drawable_obj
 
 
-def create_armature_obj_from_skel(skeleton: Skeleton, name: str, sollum_type: SollumType):
+def create_armature_obj_from_skel(skeleton: Drawable, name: str, sollum_type: SollumType):
     armature = bpy.data.armatures.new(f"{name}.skel")
-    obj = create_blender_object(sollum_type, name, armature)
+    obj = create_blender_object(sollum_type, name, armature, current_game)
 
     create_drawable_skel(skeleton, obj)
 
@@ -200,15 +218,15 @@ def create_armature_obj_from_skel(skeleton: Skeleton, name: str, sollum_type: So
 
 
 def create_joint_constraints(armature_obj: bpy.types.Object, joints: Joints):
-    if joints.rotation_limits:
+    if hasattr(joints, "rotation_limits") and joints.rotation_limits:
         apply_rotation_limits(joints.rotation_limits, armature_obj)
 
-    if joints.translation_limits:
+    if hasattr(joints, "translation_limits") and joints.translation_limits:
         apply_translation_limits(joints.translation_limits, armature_obj)
 
 
 def create_drawable_empty(name: str, drawable_xml: Drawable):
-    drawable_obj = create_empty_object(SollumType.DRAWABLE, name)
+    drawable_obj = create_empty_object(SollumType.DRAWABLE, name, current_game)
     set_drawable_properties(drawable_obj, drawable_xml)
 
     return drawable_obj
@@ -225,68 +243,39 @@ def shadergroup_to_materials(shader_group: ShaderGroup, filepath: str):
     return materials
 
 
-def lookup_texture_file(texture_name: str, model_textures_directory: Path) -> Optional[Path]:
-    """Searches for a DDS file with the given ``texture_name``.
-    The search order is as follows:
-      1. Check if file exists in ``model_textures_directory``.
-      2. Check the shared textures directories defined by the user in the add-on preferences.
-        2.1. These are searched in the priority order set by the user.
-        2.2. The user can also set whether the search is recursive or not.
-      3. If not found, returns ``None``.
-    """
-    texture_filename = f"{texture_name}.dds"
-
-    def _lookup_in_directory(directory: Path, recursive: bool) -> Optional[Path]:
-        if not directory.is_dir():
-            return None
-
-        if recursive:
-            # NOTE: rglob returns files in arbitrary order. We are just taking whatever is the first one it returns.
-            #       Maybe we should enforce some kind of sort (i.e. alphabetical), but really only makes sense to have
-            #       a single texture with this the name in the directory tree.
-            texture_path = next(directory.rglob(texture_filename), None)
-        else:
-            texture_path = directory.joinpath(texture_filename)
-
-        return texture_path if texture_path is not None and texture_path.is_file() else None
-
-    # First, check the textures directory next to the model we imported
-    found_texture_path = _lookup_in_directory(model_textures_directory, False)
-    if found_texture_path is not None:
-        return found_texture_path
-
-    # Texture not found, search the shared textures directories listed in preferences
-    prefs = get_addon_preferences(bpy.context)
-    for d in prefs.shared_textures_directories:
-        found_texture_path = _lookup_in_directory(Path(d.path), d.recursive)
-        if found_texture_path is not None:
-            return found_texture_path
-
-    # Texture still not found
-    return None
-
-
 def shader_item_to_material(shader: Shader, shader_group: ShaderGroup, filepath: str):
-    texture_folder = Path(os.path.dirname(filepath) + "\\" + os.path.basename(filepath)[:-8])
+    texture_folder = os.path.dirname(filepath) + "\\" + os.path.basename(filepath)[:-8]
+    material = None
+    hasTint = False
+    if current_game == SollumzGame.GTA:
+        filename = shader.filename
 
-    filename = shader.filename
+        if not filename:
+            filename = f"{shader.name}.sps"
 
-    if not filename:
-        filename = f"{shader.name}.sps"
-
-    material = create_shader(filename)
+        material = create_shader(filename, current_game)
+        print("GTA bucket:", current_game, material, dir(shader))
+        material.shader_properties.renderbucket = RenderBucket(shader.render_bucket).name
+    elif current_game == SollumzGame.RDR:
+        material = create_shader(shader.name, current_game)
+        material.shader_properties.renderbucket = RenderBucket(shader.draw_bucket).name
     material.name = shader.name
-    material.shader_properties.renderbucket = RenderBucket(shader.render_bucket).name
-
-    for param in shader.parameters:
+    
+    parameters = shader.parameters
+    if current_game == SollumzGame.RDR:
+        parameters = parameters.items
+    for param in parameters:
         for n in material.node_tree.nodes:
             if isinstance(n, bpy.types.ShaderNodeTexImage):
                 if param.name == n.name:
-                    texture_path = lookup_texture_file(param.texture_name, texture_folder)
-                    if texture_path is not None:
-                        img = bpy.data.images.load(str(texture_path), check_existing=True)
+                    texture_path = os.path.join(
+                        texture_folder, param.texture_name + ".dds")
+                    if os.path.isfile(texture_path):
+                        img = bpy.data.images.load(
+                            texture_path, check_existing=True)
                         n.image = img
-
+                    if current_game == SollumzGame.RDR:
+                        n.texture_properties.index = param.index
                     if not n.image:
                         # for texture shader parameters with no name
                         if not param.texture_name:
@@ -299,41 +288,52 @@ def shader_item_to_material(shader: Shader, shader_group: ShaderGroup, filepath:
                         texture = bpy.data.images.new(
                             name=param.texture_name, width=512, height=512) if not existing_texture else existing_texture
                         n.image = texture
-
+                 
                     # assign non color to normal maps
-                    if "Bump" in param.name or param.name == "distanceMapSampler":
+                    if param.name in ("Bump", "bump", "normal", "bumptex", "speculartex", "speculartex2") or param.name == "distanceMapSampler":
                         n.image.colorspace_settings.name = "Non-Color"
+
+                    # rdr check if we should set tint mix to 0.95
+                    if param.name == "tintpalettetex" and n.image is not None:
+                        hasTint = True
 
                     preferences = get_addon_preferences(bpy.context)
                     text_name = preferences.use_text_name_as_mat_name
                     if text_name:
-                        if param.texture_name and param.name == "DiffuseSampler":
+                        if param.texture_name and param.name in ("DiffuseSampler", "diffusetex"):
                             material.name = param.texture_name
 
                     # Assign embedded texture dictionary properties
-                    if shader_group.texture_dictionary is not None:
-                        for texture in shader_group.texture_dictionary:
+                    texture_dictionary = shader_group.texture_dictionary
+                    if current_game == SollumzGame.RDR:
+                        texture_dictionary = shader_group.texture_dictionary.textures
+                    if texture_dictionary is not None:
+                        for texture in texture_dictionary:
                             if texture.name == param.texture_name:
                                 n.texture_properties.embedded = True
-                                try:
-                                    format = TextureFormat[texture.format.replace("D3DFMT_", "")]
-                                    n.texture_properties.format = format
-                                except AttributeError:
-                                    print(f"Failed to set texture format: format '{texture.format}' unknown.")
+                                if current_game == SollumzGame.GTA:
+                                    try:
+                                        format = TextureFormat[texture.format.replace("D3DFMT_", "")]
+                                        n.texture_properties.format = format
+                                    except AttributeError:
+                                        print(f"Failed to set texture format: format '{texture.format}' unknown.")
 
-                                try:
-                                    usage = TextureUsage[texture.usage]
-                                    n.texture_properties.usage = usage
-                                except AttributeError:
-                                    print(f"Failed to set texture usage: usage '{texture.usage}' unknown.")
+                                    try:
+                                        usage = TextureUsage[texture.usage]
+                                        n.texture_properties.usage = usage
+                                    except AttributeError:
+                                        print(f"Failed to set texture usage: usage '{texture.usage}' unknown.")
+                                    
+                                    for prop in dir(n.texture_flags):
+                                        for uf in texture.usage_flags:
+                                            if uf.lower() == prop:
+                                                setattr(
+                                                    n.texture_flags, prop, True)
 
-                                n.texture_properties.extra_flags = texture.extra_flags
-
-                                for prop in dir(n.texture_flags):
-                                    for uf in texture.usage_flags:
-                                        if uf.lower() == prop:
-                                            setattr(
-                                                n.texture_flags, prop, True)
+                                    n.texture_properties.extra_flags = texture.extra_flags
+                                elif current_game == SollumzGame.RDR:
+                                    n.texture_properties.game_type = SollumzGame.RDR
+                                    n.texture_properties.extra_flags = texture.flags
 
                     if not n.texture_properties.embedded and not n.image.filepath:
                         # Set external texture name for non-embedded textures
@@ -349,6 +349,12 @@ def shader_item_to_material(shader: Shader, shader_group: ShaderGroup, filepath:
                         n.set("Z", param.z)
                     if n.num_cols > 3:
                         n.set("W", param.w)
+                    
+                    if param.type == "CBuffer":
+                        n.extra_property.buffer = param.buffer
+                        n.extra_property.offset = param.offset
+                    elif param.type == "Sampler":
+                        n.extra_property.index = param.index
 
     # assign extra detail node image for viewing
     dtl_ext = get_detail_extra_sampler(material)
@@ -356,14 +362,20 @@ def shader_item_to_material(shader: Shader, shader_group: ShaderGroup, filepath:
         dtl = material.node_tree.nodes["DetailSampler"]
         dtl_ext.image = dtl.image
 
+    if current_game == SollumzGame.RDR:
+        tint_value = 0.95 if hasTint else 0.0
+        for n in material.node_tree.nodes:
+            if n.name == "tint_mix_node":
+                n.inputs["Fac"].default_value = tint_value
+                break
+             
     return material
 
 
-def create_drawable_skel(skeleton_xml: Skeleton, armature_obj: bpy.types.Object):
+def create_drawable_skel(skeleton_xml: Drawable, armature_obj: bpy.types.Object):
     bpy.context.view_layer.objects.active = armature_obj
-    bones = skeleton_xml.bones
+    bones = skeleton_xml.skeleton.bones
 
-    # Need to go into edit mode to modify edit bones
     bpy.ops.object.mode_set(mode="EDIT")
 
     for bone_xml in bones:
@@ -380,6 +392,10 @@ def create_drawable_skel(skeleton_xml: Skeleton, armature_obj: bpy.types.Object)
 def create_bpy_bone(bone_xml: Bone, armature: bpy.types.Armature):
     # bpy.context.view_layer.objects.active = armature
     edit_bone = armature.edit_bones.new(bone_xml.name)
+    
+    if edit_bone is None:
+            edit_bone = armature.edit_bones.new(bone_xml.name)
+
     if bone_xml.parent_index != -1:
         edit_bone.parent = armature.edit_bones[bone_xml.parent_index]
 
@@ -486,7 +502,11 @@ def create_embedded_collisions(bounds_xml: list[BoundChild], drawable_obj: bpy.t
 
     for bound_xml in bounds_xml:
         if bound_xml.type == "Composite":
-            bound_obj = create_bound_composite(bound_xml)
+            bound_obj = None
+            if current_game == SollumzGame.GTA:
+                bound_obj = create_bound_composite(bound_xml)
+            elif current_game == SollumzGame.RDR:
+                bound_obj = create_rdr_bound(bound_xml)
             composite_objs.append(bound_obj)
         else:
             bound_obj = create_bound_object(bound_xml)
@@ -505,11 +525,17 @@ def create_drawable_lights(drawable_xml: Drawable, drawable_obj: bpy.types.Objec
     lights.parent = drawable_obj
 
 
-def set_drawable_properties(obj: bpy.types.Object, drawable_xml: Drawable):
+def set_drawable_properties(obj: bpy.types.Object, drawable_xml: Drawable, armature: bool = False):
     obj.drawable_properties.lod_dist_high = drawable_xml.lod_dist_high
     obj.drawable_properties.lod_dist_med = drawable_xml.lod_dist_med
     obj.drawable_properties.lod_dist_low = drawable_xml.lod_dist_low
     obj.drawable_properties.lod_dist_vlow = drawable_xml.lod_dist_vlow
+    if current_game == SollumzGame.RDR and armature:
+        print("Setting extra properties for armature:",obj, drawable_xml.skeleton.unknown_24)
+        obj.drawable_properties.unknown_24 = drawable_xml.skeleton.unknown_24
+        obj.drawable_properties.unknown_60 = drawable_xml.skeleton.unknown_60
+        obj.drawable_properties.parent_bone_tag = drawable_xml.skeleton.parent_bone_tag
+    # obj.drawable_properties.unknown_9A = drawable_xml.unknown_9A
 
 
 def create_drawable_as_asset(drawable_xml: Drawable, name: str, filepath: str):

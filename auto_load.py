@@ -11,6 +11,8 @@ __all__ = (
     "unregister",
 )
 
+blender_version = bpy.app.version
+
 modules = None
 ordered_classes = None
 
@@ -35,15 +37,15 @@ def register():
 
 
 def unregister():
-    called = set()
+    called = []
     for module in modules:
         if module.__name__ == __name__:
             continue
         if hasattr(module, "unregister"):
             # Check if unregister method has already been called
-            if module.unregister not in called:
+            if not module.unregister in called:
                 module.unregister()
-                called.add(module.unregister)
+                called.append(module.unregister)
 
     for cls in reversed(ordered_classes):
         bpy.utils.unregister_class(cls)
@@ -81,11 +83,13 @@ def get_ordered_classes_to_register(modules):
 
 def get_register_deps_dict(modules):
     my_classes = set(iter_my_classes(modules))
-    my_classes_by_idname = {cls.bl_idname: cls for cls in my_classes if hasattr(cls, "bl_idname")}
+    my_classes_by_idname = {
+        cls.bl_idname: cls for cls in my_classes if hasattr(cls, "bl_idname")}
 
     deps_dict = {}
     for cls in my_classes:
-        deps_dict[cls] = set(iter_my_register_deps(cls, my_classes, my_classes_by_idname))
+        deps_dict[cls] = set(iter_my_register_deps(
+            cls, my_classes, my_classes_by_idname))
     return deps_dict
 
 
@@ -103,8 +107,13 @@ def iter_my_deps_from_annotations(cls, my_classes):
 
 
 def get_dependency_from_annotation(value):
-    if isinstance(value, bpy.props._PropertyDeferred):
-        return value.keywords.get("type")
+    if blender_version >= (2, 93):
+        if isinstance(value, bpy.props._PropertyDeferred):
+            return value.keywords.get("type")
+    else:
+        if isinstance(value, tuple) and len(value) == 2:
+            if value[0] in (bpy.props.PointerProperty, bpy.props.CollectionProperty):
+                return value[1]["type"]
     return None
 
 
@@ -140,17 +149,13 @@ def iter_classes_in_module(module):
 
 
 def get_register_base_types():
-    type_names = [
+    return set(getattr(bpy.types, name) for name in [
         "Panel", "Operator", "PropertyGroup",
         "Header", "Menu",
         "Node", "NodeSocket", "NodeTree",
         "UIList", "RenderEngine",
         "Gizmo", "GizmoGroup",
-    ]
-    if bpy.app.version >= (4, 1, 0):
-        type_names.append("FileHandler")
-
-    return set(getattr(bpy.types, name) for name in type_names)
+    ])
 
 
 # Find order to register to solve dependencies

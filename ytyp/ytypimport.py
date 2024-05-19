@@ -1,13 +1,15 @@
 import bpy
 from typing import Union
+
 from mathutils import Vector, Quaternion
+
 from ..cwxml import ytyp as ytypxml, ymap as ymapxml
-from ..sollumz_properties import ArchetypeType, AssetType, EntityLodLevel, EntityPriorityLevel
-from ..sollumz_preferences import get_import_settings
-from ..sollumz_helper import duplicate_object_with_children
+from ..sollumz_properties import ArchetypeType, AssetType, EntityLodLevel, EntityPriorityLevel, SollumzGame, MapEntityType
 from .properties.ytyp import CMapTypesProperties, ArchetypeProperties, SpecialAttribute, TimecycleModifierProperties, RoomProperties, PortalProperties, MloEntityProperties, EntitySetProperties
 from .properties.extensions import ExtensionProperties, ExtensionType, ExtensionsContainer
 from ..ydr.light_flashiness import Flashiness
+
+current_game = SollumzGame.GTA
 
 
 def create_mlo_entity_set(entity_set_xml: ytypxml.EntitySet, archetype: ArchetypeProperties):
@@ -20,16 +22,16 @@ def create_mlo_entity_set(entity_set_xml: ytypxml.EntitySet, archetype: Archetyp
     entities = entity_set_xml.entities
 
     for index in range(len(locations)):
+        is_portal = (locations[index] & (1 << 31)) != 0
+        location = locations[index] & 0x7FFFFFFF
         entity = create_mlo_entity(entities[index], archetype)
-        entity.attached_entity_set_id = str(entity_set.id)
-
-        location = locations[index]
-        if (location & (1 << 31)) != 0:
-            # If MSB is set, the entity is attached to a portal
-            location &= ~(1 << 31)  # clear MSB
-            entity.attached_portal_id = str(archetype.portals[location].id)
+        if is_portal:
+            entity_portal = archetype.portals[location]
+            entity.attached_portal_id = str(entity_portal.id)
         else:
-            entity.attached_room_id = str(archetype.rooms[location].id)
+            entity_room = archetype.rooms[location]
+            entity.attached_room_id = str(entity_room.id)
+        entity.attached_entity_set_id = str(entity_set.id)
 
 
 def create_entity_set_entity(entity_xml: ymapxml.Entity, entity_set: EntitySetProperties):
@@ -66,7 +68,7 @@ def create_mlo_tcm(tcm_xml: ytypxml.TimeCycleModifier, archetype: ArchetypePrope
     tcm: TimecycleModifierProperties = archetype.new_tcm()
     tcm.name = tcm_xml.name
     tcm.sphere = tcm_xml.sphere
-    tcm.percentage = max(0.0, min(100.0, tcm_xml.percentage))
+    tcm.percentage = tcm_xml.percentage
     tcm.range = tcm_xml.range
     tcm.start_hour = tcm_xml.start_hour
     tcm.end_hour = tcm_xml.end_hour
@@ -107,24 +109,15 @@ def create_mlo_room(room_xml: ytypxml.Room, archetype: ArchetypeProperties):
 
 
 def find_and_link_entity_object(entity_xml: ymapxml.Entity, entity: MloEntityProperties):
-    """Attempt to find an existing entity object in the scene and link it to the entity data-block.
+    """Atempt to find an existing entity object in the scene and link it to the entity data-block."""
 
-    If the import setting ``SollumzImportSettings.ytyp_mlo_instance_entities`` is set, a copy of the found object is
-    linked instead of the object itself.
-    """
-
-    obj = bpy.context.scene.objects.get(entity_xml.archetype_name, None)
-    if obj is None:
-        return
-
-    should_instance = get_import_settings().ytyp_mlo_instance_entities
-    if should_instance:
-        obj = duplicate_object_with_children(obj)
-
-    entity.linked_object = obj
-    obj.location = entity.position
-    obj.rotation_euler = entity.rotation.to_euler()
-    obj.scale = Vector((entity.scale_xy, entity.scale_xy, entity.scale_z))
+    for obj in bpy.context.collection.all_objects:
+        if entity_xml.archetype_name == obj.name and obj.name in bpy.context.view_layer.objects:
+            entity.linked_object = obj
+            obj.location = entity.position
+            obj.rotation_euler = entity.rotation.to_euler()
+            obj.scale = Vector(
+                (entity.scale_xy, entity.scale_xy, entity.scale_z))
 
 
 def create_mlo_entity(entity_xml: ymapxml.Entity, archetype: ArchetypeProperties):
@@ -236,54 +229,13 @@ def create_mlo_archetype_children(archetype_xml: ytypxml.MloArchetype, archetype
     for entityset_xml in archetype_xml.entity_sets:
         create_mlo_entity_set(entityset_xml, archetype)
 
-    entities_are_instanced = get_import_settings().ytyp_mlo_instance_entities
-    if entities_are_instanced:
-        organize_mlo_entities_in_collections(archetype)
-
-
-def organize_mlo_entities_in_collections(archetype: ArchetypeProperties):
-    """Places all entities linked objects in collections. One collection per room."""
-
-    base_collection_name = f"{archetype.asset_name}.entities"
-    base_collection = bpy.data.collections.new(base_collection_name)
-    bpy.context.collection.children.link(base_collection)
-    mlo_collections = {base_collection_name: base_collection}
-
-    def _link_to_collection(obj, coll):
-        for c in obj.users_collection:
-            c.objects.unlink(obj)
-        coll.objects.link(obj)
-
-    for entity in archetype.entities:
-        obj = entity.linked_object
-        if obj is None:
-            continue
-
-        room_name = entity.get_room_name()
-        if room_name:
-            entity_collection_name = f"{archetype.asset_name}.{room_name}"
-        else:
-            entity_collection_name = base_collection_name
-
-        entity_collection = mlo_collections.get(entity_collection_name, None)
-        if entity_collection is None:
-            entity_collection = bpy.data.collections.new(entity_collection_name)
-            base_collection.children.link(entity_collection)
-            mlo_collections[entity_collection_name] = entity_collection
-
-        _link_to_collection(obj, entity_collection)
-        for child_obj in obj.children_recursive: # could be slow with lots of entities, O(len(bpy.data.objects)) time
-            _link_to_collection(child_obj, entity_collection)
-
 
 def find_and_set_archetype_asset(archetype: ArchetypeProperties):
     """Atempt to find an existing archetype asset in the scene and set it as the current asset."""
 
-    obj = bpy.context.scene.objects.get(archetype.asset_name, None)
-    if obj is None:
-        return
-
-    archetype.asset = obj
+    for obj in bpy.context.scene.collection.all_objects:
+        if obj.name == archetype.asset_name:
+            archetype.asset = obj
 
 
 def get_asset_type_enum(xml_asset_type: str) -> str:
@@ -299,6 +251,27 @@ def get_asset_type_enum(xml_asset_type: str) -> str:
         return AssetType.DRAWABLE_DICTIONARY
 
     return AssetType.ASSETLESS
+
+
+def get_map_entity_type_enum(map_entity_type: str) -> str:
+    """Get MapEntityType enum from xml asset type string."""
+
+    if map_entity_type == "MAP_ENTITY_TYPE_UNINITIALIZED":
+        return MapEntityType.UNITIALIZED
+    elif map_entity_type == "MAP_ENTITY_TYPE_BUILDING":
+        return MapEntityType.BUILDING
+    elif map_entity_type == "MAP_ENTITY_TYPE_ANIMATED_BUILDING":
+        return MapEntityType.ANIMATED_BUILDING
+    elif map_entity_type == "MAP_ENTITY_TYPE_DUMMY_OBJECT":
+        return MapEntityType.DUMMY_OBJECT
+    elif map_entity_type == "MAP_ENTITY_TYPE_COMPOSITE_ENTITY":
+        return MapEntityType.COMPOSITE_ENTITY
+    elif map_entity_type == "MAP_ENTITY_TYPE_INTERIOR_INSTANCE":
+        return MapEntityType.INTERIOR_INSTANCE
+    elif map_entity_type == "MAP_ENTITY_TYPE_GRASS_BATCH":
+        return MapEntityType.GRASS_BATCH
+    elif map_entity_type == "MAP_ENTITY_TYPE_PROP_BATCH":
+        return MapEntityType.PROP_BATCH
 
 
 def create_archetype(archetype_xml: ytypxml.BaseArchetype, ytyp: CMapTypesProperties):
@@ -321,6 +294,11 @@ def create_archetype(archetype_xml: ytypxml.BaseArchetype, ytyp: CMapTypesProper
     archetype.asset_name = archetype_xml.asset_name
     archetype.asset_type = get_asset_type_enum(archetype_xml.asset_type)
 
+    if current_game == SollumzGame.RDR:
+        archetype.load_flags = int(archetype_xml.load_flags, 0)
+        archetype.guid = int(archetype_xml.guid, 0)
+        archetype.unknown_1 = get_map_entity_type_enum(archetype_xml.unknown_1)
+
     find_and_set_archetype_asset(archetype)
 
     if archetype_xml.type == "CBaseArchetypeDef":
@@ -337,11 +315,15 @@ def create_archetype(archetype_xml: ytypxml.BaseArchetype, ytyp: CMapTypesProper
         create_extension(extension_xml, archetype)
 
 
-def ytyp_to_obj(ytyp_xml: ytypxml.CMapTypes):
+def ytyp_to_obj(ytyp_xml: ytypxml.CMapTypes, game: SollumzGame):
     """Create a ytyp data-block in the Blender scene given a ytyp cwxml."""
+
+    global current_game
+    current_game = game
 
     ytyp: CMapTypesProperties = bpy.context.scene.ytyps.add()
     ytyp.name = ytyp_xml.name
+    ytyp.game = current_game
 
     bpy.context.scene.ytyp_index = len(bpy.context.scene.ytyps) - 1
 

@@ -67,7 +67,9 @@ class LightType(str, Enum):
 class MaterialType(str, Enum):
     NONE = "sollumz_material_none",
     SHADER = "sollumz_material_shader",
+    SHADER_RDR = "sollumz_material_shader_rdr"
     COLLISION = "sollumz_material_collision"
+    COLLISION_RDR = "sollumz_material_collision_rdr"
     SHATTER_MAP = "sollumz_material_shard"
 
 
@@ -127,15 +129,6 @@ class LODLevel(str, Enum):
     VERYHIGH = "sollumz_veryhigh"
 
 
-LODLevelEnumItems = (
-    (LODLevel.HIGH, "High", "", 0),
-    (LODLevel.MEDIUM, "Medium", "", 1),
-    (LODLevel.LOW, "Low", "", 2),
-    (LODLevel.VERYLOW, "Very Low", "", 3),
-    (LODLevel.VERYHIGH, "Very High", "", 4),
-)
-
-
 class EntityLodLevel(str, Enum):
     LODTYPES_DEPTH_HD = "sollumz_lodtypes_depth_hd"
     LODTYPES_DEPTH_LOD = "sollumz_lodtypes_depth_lod"
@@ -165,6 +158,17 @@ class AssetType(str, Enum):
     DRAWABLE = "sollumz_asset_drawable"
     DRAWABLE_DICTIONARY = "sollumz_asset_drawable_dictionary"
     ASSETLESS = "sollumz_asset_assetless"
+
+
+class MapEntityType(str, Enum):
+    UNITIALIZED = "sollumz_map_entity_unintialized"
+    BUILDING = "sollumz_map_entity_building"
+    ANIMATED_BUILDING = "sollumz_map_entity_animated_building"
+    DUMMY_OBJECT = "sollumz_map_entity_dummy_object"
+    COMPOSITE_ENTITY = "sollumz_map_entity_composite_entity"
+    INTERIOR_INSTANCE = "sollumz_map_interior_instance"
+    GRASS_BATCH = "sollumz_map_entity_grass_batch"
+    PROP_BATCH = "sollumz_map_entity_prop_batch"
 
 
 class VehicleLightID(str, Enum):
@@ -197,6 +201,12 @@ class VehiclePaintLayer(str, Enum):
     WHEEL = "sollumz_wheel_color"
     INTERIOR_TRIM = "sollumz_interior_trim_color"
     INTERIOR_DASH = "sollumz_interior_dash_color"
+
+
+class SollumzGame(str, Enum):
+    UNIVERSAL = "sollumz_universal"
+    GTA = "sollumz_gta5"
+    RDR = "sollumz_rdr3"
 
 
 FRAGMENT_TYPES = [
@@ -314,11 +324,17 @@ SOLLUMZ_UI_NAMES = {
     SollumType.YMAP_BOX_OCCLUDER: "Box Occluder",
     SollumType.YMAP_MODEL_OCCLUDER: "Model Occluder",
     SollumType.YMAP_CAR_GENERATOR: "Car Generator",
+    
+    SollumzGame.UNIVERSAL: "Universal",
+    SollumzGame.GTA: "GTA 5",
+    SollumzGame.RDR: "RDR 2",
 
     MaterialType.NONE: "None",
     MaterialType.SHADER: "Sollumz Material",
     MaterialType.COLLISION: "Sollumz Collision Material",
     MaterialType.SHATTER_MAP: "Sollumz Shatter Map",
+    MaterialType.SHADER_RDR: "Sollumz RDR Material",
+    MaterialType.COLLISION_RDR: "Sollumz RDR Collision Material",
 
     TextureUsage.UNKNOWN: "UNKNOWN",
     TextureUsage.TINTPALETTE: "TINTPALETTE",
@@ -366,7 +382,7 @@ SOLLUMZ_UI_NAMES = {
 
     LODLevel.VERYHIGH: "Very High",
     LODLevel.HIGH: "High",
-    LODLevel.MEDIUM: "Medium",
+    LODLevel.MEDIUM: "Med",
     LODLevel.LOW: "Low",
     LODLevel.VERYLOW: "Very Low",
 
@@ -397,6 +413,15 @@ SOLLUMZ_UI_NAMES = {
     AssetType.DRAWABLE: "Drawable",
     AssetType.DRAWABLE_DICTIONARY: "Drawable Dictionary",
     AssetType.ASSETLESS: "Assetless",
+
+    MapEntityType.UNITIALIZED: "Uninitialized",
+    MapEntityType.BUILDING: "Building",
+    MapEntityType.ANIMATED_BUILDING: "Animated Building",
+    MapEntityType.DUMMY_OBJECT: "Dummy Object",
+    MapEntityType.COMPOSITE_ENTITY: "Composite Entity",
+    MapEntityType.INTERIOR_INSTANCE: "Interior Instance",
+    MapEntityType.GRASS_BATCH: "Grass Batch",
+    MapEntityType.PROP_BATCH: "Prop Batch",
 
     VehicleLightID.NONE: "None",
     VehicleLightID.CUSTOM: "Custom",
@@ -453,10 +478,8 @@ class FlagPropertyGroup:
 
         flags = int_to_bool_list(int(self.total), size=self.size)
         for index, flag_name in enumerate(self.__annotations__):
-            if index >= self.size:
-                break
-
-            self[flag_name] = flags[index]
+            if index < 32:
+                self[flag_name] = flags[index]
 
     def update_flag(self, context):
         flags = flag_prop_to_list(self.__class__, self, size=self.size)
@@ -495,7 +518,6 @@ time_items = [("0", "12:00 AM", ""),
 
 
 class TimeFlags(FlagPropertyGroup, bpy.types.PropertyGroup):
-    size = 24
     hour1: bpy.props.BoolProperty(
         name="12:00 AM - 1:00 AM", update=FlagPropertyGroup.update_flag)
     hour2: bpy.props.BoolProperty(
@@ -544,6 +566,22 @@ class TimeFlags(FlagPropertyGroup, bpy.types.PropertyGroup):
         name="10:00 PM - 11:00 PM", update=FlagPropertyGroup.update_flag)
     hour24: bpy.props.BoolProperty(
         name="11:00 PM - 12:00 AM", update=FlagPropertyGroup.update_flag)
+    unk1: bpy.props.BoolProperty(
+        name="Unknown 1", update=FlagPropertyGroup.update_flag)
+    unk2: bpy.props.BoolProperty(
+        name="Unknown 2", update=FlagPropertyGroup.update_flag)
+    unk3: bpy.props.BoolProperty(
+        name="Unknown 3", update=FlagPropertyGroup.update_flag)
+    unk4: bpy.props.BoolProperty(
+        name="Unknown 4", update=FlagPropertyGroup.update_flag)
+    unk5: bpy.props.BoolProperty(
+        name="Unknown 5", update=FlagPropertyGroup.update_flag)
+    unk6: bpy.props.BoolProperty(
+        name="Unknown 6", update=FlagPropertyGroup.update_flag)
+    unk7: bpy.props.BoolProperty(
+        name="Unknown 7", update=FlagPropertyGroup.update_flag)
+    unk8: bpy.props.BoolProperty(
+        name="Unknown 8", update=FlagPropertyGroup.update_flag)
 
     time_flags_start: bpy.props.EnumProperty(
         items=time_items, name="Time Start")
@@ -582,7 +620,26 @@ class ObjectEntityProperties(bpy.types.PropertyGroup, EntityProperties):
     pass
 
 
+def updateSceneSollumzGame(self, context):
+    context.scene.sollum_shader_game_type = context.scene.sollum_game_type
+    context.scene.sollum_collision_material_game_type = context.scene.sollum_game_type
+
 def register():
+    bpy.types.Object.sollum_game_type = bpy.props.EnumProperty(
+        items=items_from_enums(SollumzGame),
+        name="Sollumz Game",
+        default=SollumzGame.GTA,
+        options={"HIDDEN"}
+    )
+
+    bpy.types.Scene.sollum_game_type = bpy.props.EnumProperty(
+        items=items_from_enums(SollumzGame),
+        name="Sollumz Game",
+        default=SollumzGame.GTA,
+        options={"HIDDEN"},
+        update=updateSceneSollumzGame
+    )
+
     bpy.types.Object.sollum_type = bpy.props.EnumProperty(
         items=items_from_enums(SollumType),
         name="Sollumz Type",
@@ -687,6 +744,8 @@ def register():
 
 
 def unregister():
+    del bpy.types.Scene.sollum_game_type
+    del bpy.types.Object.sollum_game_type
     del bpy.types.Object.sollum_type
     del bpy.types.Material.sollum_type
     del bpy.types.Object.entity_properties

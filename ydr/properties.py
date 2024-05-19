@@ -4,8 +4,8 @@ from typing import Optional
 from ..tools.blenderhelper import lod_level_enum_flag_prop_factory
 from ..sollumz_helper import find_sollumz_parent
 from ..cwxml.light_preset import LightPresetsFile
-from ..sollumz_properties import SOLLUMZ_UI_NAMES, items_from_enums, TextureUsage, TextureFormat, LODLevel, SollumType, LightType, FlagPropertyGroup, TimeFlags
-from ..ydr.shader_materials import shadermats
+from ..sollumz_properties import SOLLUMZ_UI_NAMES, SollumzGame, items_from_enums, TextureUsage, TextureFormat, LODLevel, SollumType, LightType, FlagPropertyGroup, TimeFlags
+from ..ydr.shader_materials import shadermats, rdr_shadermats
 from .render_bucket import RenderBucket, RenderBucketEnumItems
 from .light_flashiness import Flashiness, LightFlashinessEnumItems
 from bpy.app.handlers import persistent
@@ -90,12 +90,19 @@ class DrawableProperties(bpy.types.PropertyGroup):
         min=0, max=10000, default=9998, name="Lod Distance Low")
     lod_dist_vlow: bpy.props.FloatProperty(
         min=0, max=10000, default=9998, name="Lod Distance Vlow")
+    unknown_9A: bpy.props.FloatProperty(
+        min=0, max=10000, default=9998, name="Unknown 9A")
+    unknown_24: bpy.props.IntProperty(min=0, default=0, name="Unknown 24")
+    unknown_60: bpy.props.IntProperty(min=0, default=0, name="Unknown 60")
+    parent_bone_tag: bpy.props.IntProperty(min=0, default=0, name="Parent BoneTag")
 
     shader_order: bpy.props.PointerProperty(type=DrawableShaderOrder)
 
 
 class DrawableModelProperties(bpy.types.PropertyGroup):
     render_mask: bpy.props.IntProperty(name="Render Mask", default=255)
+    flags: bpy.props.IntProperty(name="Flags", default=0)
+    unknown_1: bpy.props.IntProperty(name="Unknown 1", default=0)
     sollum_lod: bpy.props.EnumProperty(
         items=items_from_enums(
             [LODLevel.HIGH, LODLevel.MEDIUM, LODLevel.LOW, LODLevel.VERYLOW]),
@@ -165,8 +172,16 @@ class TextureFlags(bpy.types.PropertyGroup):
     unk24: bpy.props.BoolProperty(name="UNK24", default=False)
 
 
+def updateEmbeddedTextureProperty(self, context):
+    if self.game_type == SollumzGame.RDR:
+        if self.embedded:
+            self.extra_flags = 402685954
+        else:
+            self.extra_flags = 0
+
 class TextureProperties(bpy.types.PropertyGroup):
-    embedded: bpy.props.BoolProperty(name="Embedded", default=False)
+    index: bpy.props.IntProperty(default=0)
+    embedded: bpy.props.BoolProperty(name="Embedded", default=False, update=updateEmbeddedTextureProperty)
     usage: bpy.props.EnumProperty(
         items=items_from_enums(TextureUsage),
         name="Usage",
@@ -180,6 +195,12 @@ class TextureProperties(bpy.types.PropertyGroup):
     )
 
     extra_flags: bpy.props.IntProperty(name="Extra Flags", default=0)
+
+    game_type: bpy.props.EnumProperty(
+        items=items_from_enums(SollumzGame),
+        name="Game Type",
+        default=SollumzGame.GTA
+    )
 
 
 class BoneFlag(bpy.types.PropertyGroup):
@@ -250,35 +271,49 @@ class BoneProperties(bpy.types.PropertyGroup):
 class ShaderMaterial(bpy.types.PropertyGroup):
     index: bpy.props.IntProperty("Index")
     name: bpy.props.StringProperty("Name")
+    game: bpy.props.StringProperty("Game")
 
 
 class LightProperties(bpy.types.PropertyGroup):
-    flashiness: bpy.props.EnumProperty(name="Flashiness", items=LightFlashinessEnumItems,
-                                       default=Flashiness.CONSTANT.name)
+    flashiness: bpy.props.IntProperty(name="Flashiness")
     group_id: bpy.props.IntProperty(name="Group ID")
-    culling_plane_normal: bpy.props.FloatVectorProperty(name="Culling Plane Normal", subtype="XYZ")
-    culling_plane_offset: bpy.props.FloatProperty(name="Culling Plane Offset", subtype="DISTANCE")
-    shadow_blur: bpy.props.FloatProperty(name="Shadow Blur", min=0.0, max=1.0, subtype="FACTOR")
-    volume_size_scale: bpy.props.FloatProperty(name="Volume Size Scale", default=1.0)
+    falloff: bpy.props.FloatProperty(name="Falloff")
+    falloff_exponent: bpy.props.FloatProperty(name="Falloff Exponent")
+    culling_plane_normal: bpy.props.FloatVectorProperty(
+        name="Culling Plane Normal")
+    culling_plane_offset: bpy.props.FloatProperty(name="Culling Plane Offset")
+    unknown_45: bpy.props.FloatProperty(name="Unknown 45")
+    unknown_46: bpy.props.FloatProperty(name="Unknown 46")
+    volume_intensity: bpy.props.FloatProperty(
+        name="Volume Intensity", default=1.0)
+    shadow_blur: bpy.props.FloatProperty(name="Shadow Blur")
+    volume_size_scale: bpy.props.FloatProperty(
+        name="Volume Size Scale", default=1.0)
     volume_outer_color: bpy.props.FloatVectorProperty(
-        name="Volume Outer Color",
-        subtype="COLOR",
-        min=0.0,
-        max=1.0,
-        default=(1.0, 1.0, 1.0)
-    )
+        name="Volume Outer Color", subtype="COLOR", min=0.0, max=1.0, default=(1.0, 1.0, 1.0))
     light_hash: bpy.props.IntProperty(name="Light Hash")
-    volume_outer_intensity: bpy.props.FloatProperty(name="Volume Outer Intensity", default=1.0)
+    volume_outer_intensity: bpy.props.FloatProperty(
+        name="Volume Outer Intensity", default=1.0)
     corona_size: bpy.props.FloatProperty(name="Corona Size")
-    volume_outer_exponent: bpy.props.FloatProperty(name="Volume Outer Exponent", default=1.0)
+    volume_outer_exponent: bpy.props.FloatProperty(
+        name="Volume Outer Exponent", default=1.0)
     light_fade_distance: bpy.props.FloatProperty(name="Light Fade Distance")
     shadow_fade_distance: bpy.props.FloatProperty(name="Shadow Fade Distance")
-    specular_fade_distance: bpy.props.FloatProperty(name="Specular Fade Distance")
-    volumetric_fade_distance: bpy.props.FloatProperty(name="Volumetric Fade Distance")
-    corona_intensity: bpy.props.FloatProperty(name="Corona Intensity", default=1.0)
+    specular_fade_distance: bpy.props.FloatProperty(
+        name="Specular Fade Distance")
+    volumetric_fade_distance: bpy.props.FloatProperty(
+        name="Volumetric Fade Distance")
+    shadow_near_clip: bpy.props.FloatProperty(name="Shadow Near Clip")
+    corona_intensity: bpy.props.FloatProperty(
+        name="Corona Intensity", default=1.0)
     corona_z_bias: bpy.props.FloatProperty(name="Corona Z Bias", default=0.1)
-    extent: bpy.props.FloatVectorProperty(name="Extent", default=(1, 1, 1), subtype="XYZ", soft_min=0.01, unit="LENGTH")
-    projected_texture_hash: bpy.props.StringProperty(name="Projected Texture Hash")
+    tangent: bpy.props.FloatVectorProperty(name="Tangent")
+    cone_inner_angle: bpy.props.FloatProperty(name="Cone Inner Angle")
+    cone_outer_angle: bpy.props.FloatProperty(name="Cone Outer Angle")
+    extent: bpy.props.FloatVectorProperty(
+        name="Extent", default=(1, 1, 1), subtype="XYZ")
+    projected_texture_hash: bpy.props.StringProperty(
+        name="Projected Texture Hash")
 
 
 class LightPresetProp(bpy.types.PropertyGroup):
@@ -451,12 +486,21 @@ class LightFlags(FlagPropertyGroup, bpy.types.PropertyGroup):
 @persistent
 def on_file_loaded(_):
     # Handler sets the default value of the ShaderMaterials collection on blend file load
+    sollum_game_type = bpy.context.scene.sollum_shader_game_type
+    materials = shadermats
+    game = "sollumz_gta5"
+    
     bpy.context.scene.shader_materials.clear()
-    for index, mat in enumerate(shadermats):
+    if sollum_game_type == SollumzGame.RDR:
+        materials = rdr_shadermats
+        game = "sollumz_rdr3"
+        
+    for index, mat in enumerate(materials):
         item = bpy.context.scene.shader_materials.add()
         item.index = index
         item.name = mat.name
-
+        item.game = game
+   
     load_light_presets()
 
 
@@ -496,12 +540,11 @@ light_presets = LightPresetsFile()
 
 def load_light_presets():
     bpy.context.scene.light_presets.clear()
-
     path = get_light_presets_path()
     if not os.path.exists(path):
         path = get_defaut_light_presets_path()
         if not os.path.exists(path):
-            return
+            return    
 
     file = LightPresetsFile.from_xml_file(path)
     light_presets.presets = file.presets
@@ -523,17 +566,40 @@ def get_model_properties(model_obj: bpy.types.Object, lod_level: LODLevel) -> Dr
     if drawable_obj is not None and model_obj.vertex_groups:
         return drawable_obj.skinned_model_properties.get_lod(lod_level)
 
-    lod = model_obj.sz_lods.get_lod(lod_level)
-    lod_mesh = lod.mesh
+    lod = model_obj.sollumz_lods.get_lod(lod_level)
 
-    if lod_mesh is None:
+    if lod is None or lod.mesh is None:
         raise ValueError(
             f"Failed to get Drawable Model properties: {model_obj.name} has no {SOLLUMZ_UI_NAMES[lod_level]} LOD!")
 
-    return lod_mesh.drawable_model_properties
+    return lod.mesh.drawable_model_properties
 
+
+def updateShaderList(self, context):
+    sollum_game_type = context.scene.sollum_shader_game_type
+    materials = shadermats
+    game = "sollumz_gta5"
+    
+    context.scene.shader_materials.clear()
+    if sollum_game_type == SollumzGame.RDR:
+        materials = rdr_shadermats
+        game = "sollumz_rdr3"
+        
+    for index, mat in enumerate(materials):
+        item = context.scene.shader_materials.add()
+        item.index = index
+        item.name = mat.name
+        item.game = game
 
 def register():
+    bpy.types.Scene.sollum_shader_game_type = bpy.props.EnumProperty(
+        items=items_from_enums(SollumzGame),
+        name="(HIDDEN)Sollumz Game",
+        description="Hidden property used to sync with global game selection",
+        default=SollumzGame.GTA,
+        options={"HIDDEN"},
+        update=updateShaderList
+    )
     bpy.types.Scene.shader_material_index = bpy.props.IntProperty(
         name="Shader Material Index")  # MAKE ENUM WITH THE MATERIALS NAMES
     bpy.types.Scene.shader_materials = bpy.props.CollectionProperty(
@@ -616,6 +682,7 @@ def register():
 
 
 def unregister():
+    del bpy.types.Scene.sollum_shader_game_type
     del bpy.types.ShaderNodeTexImage.sollumz_texture_name
     del bpy.types.Scene.shader_material_index
     del bpy.types.Scene.shader_materials
