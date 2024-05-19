@@ -9,6 +9,10 @@ class SzShaderNodeParameterDisplayType(IntEnum):
     BOOL = 3
     HIDDEN_IN_UI = 4
 
+class SzShaderNodeParameterExtraProperty(bpy.types.PropertyGroup):
+    buffer: bpy.props.FloatProperty(default=0)
+    offset: bpy.props.FloatProperty(default=0)
+    index: bpy.props.IntProperty(default=0)
 
 class SzShaderNodeParameter(bpy.types.ShaderNode):
     bl_idname = "SOLLUMZ_NT_SHADER_Parameter"
@@ -17,6 +21,7 @@ class SzShaderNodeParameter(bpy.types.ShaderNode):
     num_cols: bpy.props.IntProperty(default=0, min=1, max=4)
     num_rows: bpy.props.IntProperty(default=0, min=1)
     display_type: bpy.props.IntProperty(default=SzShaderNodeParameterDisplayType.DEFAULT)
+    extra_property: bpy.props.PointerProperty(type=SzShaderNodeParameterExtraProperty)
 
     def set_display_type(self, display_type: SzShaderNodeParameterDisplayType):
         self.display_type = display_type

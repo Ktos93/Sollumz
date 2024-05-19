@@ -67,7 +67,9 @@ class LightType(str, Enum):
 class MaterialType(str, Enum):
     NONE = "sollumz_material_none",
     SHADER = "sollumz_material_shader",
+    SHADER_RDR = "sollumz_material_shader_rdr"
     COLLISION = "sollumz_material_collision"
+    COLLISION_RDR = "sollumz_material_collision_rdr"
     SHATTER_MAP = "sollumz_material_shard"
 
 
@@ -167,6 +169,17 @@ class AssetType(str, Enum):
     ASSETLESS = "sollumz_asset_assetless"
 
 
+class MapEntityType(str, Enum):
+    UNITIALIZED = "sollumz_map_entity_unintialized"
+    BUILDING = "sollumz_map_entity_building"
+    ANIMATED_BUILDING = "sollumz_map_entity_animated_building"
+    DUMMY_OBJECT = "sollumz_map_entity_dummy_object"
+    COMPOSITE_ENTITY = "sollumz_map_entity_composite_entity"
+    INTERIOR_INSTANCE = "sollumz_map_interior_instance"
+    GRASS_BATCH = "sollumz_map_entity_grass_batch"
+    PROP_BATCH = "sollumz_map_entity_prop_batch"
+
+
 class VehicleLightID(str, Enum):
     NONE = "none"
     ALWAYS_ON = "0"
@@ -197,6 +210,12 @@ class VehiclePaintLayer(str, Enum):
     WHEEL = "sollumz_wheel_color"
     INTERIOR_TRIM = "sollumz_interior_trim_color"
     INTERIOR_DASH = "sollumz_interior_dash_color"
+
+
+class SollumzGame(str, Enum):
+    UNIVERSAL = "sollumz_universal"
+    GTA = "sollumz_gta5"
+    RDR = "sollumz_rdr3"
 
 
 FRAGMENT_TYPES = [
@@ -314,11 +333,17 @@ SOLLUMZ_UI_NAMES = {
     SollumType.YMAP_BOX_OCCLUDER: "Box Occluder",
     SollumType.YMAP_MODEL_OCCLUDER: "Model Occluder",
     SollumType.YMAP_CAR_GENERATOR: "Car Generator",
+    
+    SollumzGame.UNIVERSAL: "Universal",
+    SollumzGame.GTA: "GTA 5",
+    SollumzGame.RDR: "RDR 2",
 
     MaterialType.NONE: "None",
     MaterialType.SHADER: "Sollumz Material",
     MaterialType.COLLISION: "Sollumz Collision Material",
     MaterialType.SHATTER_MAP: "Sollumz Shatter Map",
+    MaterialType.SHADER_RDR: "Sollumz RDR Material",
+    MaterialType.COLLISION_RDR: "Sollumz RDR Collision Material",
 
     TextureUsage.UNKNOWN: "UNKNOWN",
     TextureUsage.TINTPALETTE: "TINTPALETTE",
@@ -397,6 +422,15 @@ SOLLUMZ_UI_NAMES = {
     AssetType.DRAWABLE: "Drawable",
     AssetType.DRAWABLE_DICTIONARY: "Drawable Dictionary",
     AssetType.ASSETLESS: "Assetless",
+
+    MapEntityType.UNITIALIZED: "Uninitialized",
+    MapEntityType.BUILDING: "Building",
+    MapEntityType.ANIMATED_BUILDING: "Animated Building",
+    MapEntityType.DUMMY_OBJECT: "Dummy Object",
+    MapEntityType.COMPOSITE_ENTITY: "Composite Entity",
+    MapEntityType.INTERIOR_INSTANCE: "Interior Instance",
+    MapEntityType.GRASS_BATCH: "Grass Batch",
+    MapEntityType.PROP_BATCH: "Prop Batch",
 
     VehicleLightID.NONE: "None",
     VehicleLightID.CUSTOM: "Custom",
@@ -582,7 +616,26 @@ class ObjectEntityProperties(bpy.types.PropertyGroup, EntityProperties):
     pass
 
 
+def updateSceneSollumzGame(self, context):
+    context.scene.sollum_shader_game_type = context.scene.sollum_game_type
+    context.scene.sollum_collision_material_game_type = context.scene.sollum_game_type
+
 def register():
+    bpy.types.Object.sollum_game_type = bpy.props.EnumProperty(
+        items=items_from_enums(SollumzGame),
+        name="Sollumz Game",
+        default=SollumzGame.GTA,
+        options={"HIDDEN"}
+    )
+
+    bpy.types.Scene.sollum_game_type = bpy.props.EnumProperty(
+        items=items_from_enums(SollumzGame),
+        name="Sollumz Game",
+        default=SollumzGame.GTA,
+        options={"HIDDEN"},
+        update=updateSceneSollumzGame
+    )
+
     bpy.types.Object.sollum_type = bpy.props.EnumProperty(
         items=items_from_enums(SollumType),
         name="Sollumz Type",
@@ -687,6 +740,8 @@ def register():
 
 
 def unregister():
+    del bpy.types.Scene.sollum_game_type
+    del bpy.types.Object.sollum_game_type
     del bpy.types.Object.sollum_type
     del bpy.types.Material.sollum_type
     del bpy.types.Object.entity_properties

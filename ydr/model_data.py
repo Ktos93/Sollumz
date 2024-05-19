@@ -5,9 +5,11 @@ from numpy.typing import NDArray
 from typing import NamedTuple, Tuple
 
 from ..tools.drawablehelper import get_model_xmls_by_lod
-from ..sollumz_properties import LODLevel
-from ..cwxml.drawable import Bone, Drawable, DrawableModel, Geometry, VertexBuffer
+from ..sollumz_properties import LODLevel, SollumzGame
+from ..cwxml.drawable import Bone, Drawable, DrawableModel, Geometry, LodList, VertexBuffer
+from ..cwxml.drawable_RDR import VERT_ATTR_DTYPES
 
+current_game = SollumzGame.GTA
 
 class MeshData(NamedTuple):
     vert_arr: NDArray
@@ -20,14 +22,20 @@ class ModelData(NamedTuple):
     # Used for storing drawable model properties
     xml_lods: dict[LODLevel, DrawableModel]
     bone_index: int
+    bone_mapping: dict[LODLevel, list]
 
 
 def get_model_data(drawable_xml: Drawable) -> list[ModelData]:
     """Get ModelData for each DrawableModel."""
+    global current_game
+    current_game = drawable_xml.game
     model_datas: list[ModelData] = []
     model_xmls = get_lod_model_xmls(drawable_xml)
-
     for (bone_index, _), model_lods in model_xmls.items():
+        if current_game == SollumzGame.RDR:
+            mapping = {lod_level: model_xml.bone_mapping for lod_level, model_xml in model_lods.items()}
+        else:
+            mapping = None
         model_data = ModelData(
             mesh_data_lods={
                 lod_level: mesh_data_from_xml(model_xml) for lod_level, model_xml in model_lods.items()
@@ -35,7 +43,8 @@ def get_model_data(drawable_xml: Drawable) -> list[ModelData]:
             xml_lods={
                 lod_level: model_xml for lod_level, model_xml in model_lods.items()
             },
-            bone_index=bone_index
+            bone_index=bone_index,
+            bone_mapping=mapping
         )
 
         model_datas.append(model_data)
@@ -240,6 +249,8 @@ def get_lod_model_xmls(drawable_xml: Drawable) -> dict[(int, int), dict[LODLevel
     model_xmls_map: dict[(int, int), dict[LODLevel, DrawableModel]] = defaultdict(dict)
 
     for lod_level, models in get_model_xmls_by_lod(drawable_xml).items():
+        if current_game == SollumzGame.RDR and isinstance(models, LodList):
+            models = models.models
         model_count_per_bone = defaultdict(int)
         for model_xml in models:
             bone_index = model_xml.bone_index
@@ -267,13 +278,20 @@ def get_model_joined_ind_arr(geoms: list[Geometry]) -> NDArray[np.uint32]:
     num_verts = 0
 
     for geom in geoms:
-        ind_arr = geom.index_buffer.data
+        ind_arr = None
+        if current_game == SollumzGame.RDR:
+            ind_arr = geom.indices
+        elif current_game == SollumzGame.GTA:
+            ind_arr = geom.index_buffer.data
 
         if num_verts > 0:
             ind_arr += num_verts
 
         ind_arrs.append(ind_arr)
-        num_verts += len(geom.vertex_buffer.data)
+        if current_game == SollumzGame.RDR:
+            num_verts += len(geom.vertices)
+        elif current_game == SollumzGame.GTA:
+            num_verts += len(geom.vertex_buffer.data)
 
     return np.concatenate(ind_arrs)
 
@@ -283,7 +301,10 @@ def get_model_joined_vert_arr(geoms: list[Geometry]) -> NDArray:
     vert_arrs: list[NDArray] = []
 
     for geom in geoms:
-        vert_arr = geom.vertex_buffer.data
+        if current_game == SollumzGame.RDR:
+            vert_arr = geom.vertices
+        elif current_game == SollumzGame.GTA:
+            vert_arr = geom.vertex_buffer.data
 
         if vert_arr is None:
             continue
@@ -303,15 +324,28 @@ def get_model_joined_vert_arr(geoms: list[Geometry]) -> NDArray:
 
 def get_model_vert_buffer_dtype(geoms: list[Geometry]) -> np.dtype:
     """Get the dtype of the structured array of the joined geometry vertex buffers."""
-    used_attrs: set[Tuple] = set(
-        name for geom in geoms for name in geom.vertex_buffer.data.dtype.names)
-    arr_dtype = []
+    arr_dtype = []    
+    if current_game == SollumzGame.RDR:
+        merged_dtype_names = []
+        for geom in geoms:
+            geo_dtype = geom.vertices.dtype
+            for dtype in geo_dtype.names:
+                for attr_name, attr_dtype in VERT_ATTR_DTYPES.items():
+                    if attr_dtype[0] in dtype:
+                        x = list(attr_dtype.copy())
+                        x[0] = dtype
+                        if dtype not in merged_dtype_names:
+                            arr_dtype.append(tuple(x))
+                            merged_dtype_names.append(dtype)
+        del merged_dtype_names[:]; del merged_dtype_names
+    else:
+        used_attrs: set[Tuple] = set(
+            name for geom in geoms for name in geom.vertex_buffer.data.dtype.names)
+        for attr_name, attr_dtype in VertexBuffer.VERT_ATTR_DTYPES.items():
+            if attr_name not in used_attrs:
+                continue
 
-    for attr_name, attr_dtype in VertexBuffer.VERT_ATTR_DTYPES.items():
-        if attr_name not in used_attrs:
-            continue
-
-        arr_dtype.append(attr_dtype)
+            arr_dtype.append(attr_dtype)
 
     return np.dtype(arr_dtype)
 
@@ -327,7 +361,10 @@ def get_model_poly_mat_inds(geoms: list[Geometry]):
     mat_ind_arrs = []
 
     for geom in geoms:
-        num_tris = round(len(geom.index_buffer.data) / 3)
+        if current_game == SollumzGame.GTA:
+            num_tris = round(len(geom.index_buffer.data) / 3)
+        elif current_game == SollumzGame.RDR:
+            num_tris = round(len(geom.indices) / 3)
         mat_inds = np.full((num_tris,), geom.shader_index)
 
         mat_ind_arrs.append(mat_inds)
@@ -337,4 +374,7 @@ def get_model_poly_mat_inds(geoms: list[Geometry]):
 
 def get_valid_geoms(model_xml: DrawableModel) -> list[Geometry]:
     """Get geometries with mesh data in model_xml."""
-    return [geom for geom in model_xml.geometries if geom.vertex_buffer.data is not None and geom.index_buffer.data is not None]
+    if current_game == SollumzGame.GTA:
+        return [geom for geom in model_xml.geometries if geom.vertex_buffer.data is not None and geom.index_buffer.data is not None]
+    elif current_game == SollumzGame.RDR:
+        return [geom for geom in model_xml.geometries if geom.vertices is not None and geom.indices is not None]

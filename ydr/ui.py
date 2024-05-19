@@ -1,10 +1,10 @@
 import bpy
 from bpy.types import Context
 from . import operators as ydr_ops
-from .shader_materials import shadermats
-from ..cwxml.shader import ShaderManager
+from .shader_materials import shadermats, rdr_shadermats
 from ..sollumz_ui import SOLLUMZ_PT_OBJECT_PANEL, SOLLUMZ_PT_MAT_PANEL
-from ..sollumz_properties import SollumType, MaterialType, LightType, SOLLUMZ_UI_NAMES
+from ..sollumz_properties import SollumType, MaterialType, LightType, SOLLUMZ_UI_NAMES, SollumzGame
+from ..cwxml.shader import ShaderManager
 from ..sollumz_ui import FlagsPanel, TimeFlagsPanel
 from ..sollumz_helper import find_sollumz_parent
 from ..icons import icon_manager
@@ -36,6 +36,16 @@ class SOLLUMZ_PT_DRAWABLE_PANEL(bpy.types.Panel):
         col.prop(drawable_props, "lod_dist_med", text="Med")
         col.prop(drawable_props, "lod_dist_low", text="Low")
         col.prop(drawable_props, "lod_dist_vlow", text="Vlow")
+
+        if obj.sollum_game_type == SollumzGame.RDR and obj.type == "ARMATURE":
+            col.prop(drawable_props, "unknown_24")
+            col.prop(drawable_props, "unknown_60")
+            col.prop(drawable_props, "parent_bone_tag")
+
+        if obj.sollum_game_type == SollumzGame.RDR and obj.type == "ARMATURE":
+            col.prop(drawable_props, "unknown_24")
+            col.prop(drawable_props, "unknown_60")
+            col.prop(drawable_props, "parent_bone_tag")
 
         col.separator()
 
@@ -124,7 +134,11 @@ class SOLLUMZ_UL_SHADER_MATERIALS_LIST(bpy.types.UIList):
     def draw_item(
         self, context, layout, data, item, icon, active_data, active_propname, index
     ):
-        name = shadermats[item.index].ui_name
+        if item.game == SollumzGame.RDR:
+            name = rdr_shadermats[item.index].ui_name
+        else:
+            name = shadermats[item.index].ui_name
+
         # If the object is selected
         if self.layout_type in {"DEFAULT", "COMPACT"}:
             row = layout.row()

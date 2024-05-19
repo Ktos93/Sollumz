@@ -1,8 +1,8 @@
+from enum import IntEnum
 from typing import Union
 import bpy
-from enum import IntEnum
 from ...tools.blenderhelper import get_children_recursive
-from ...sollumz_properties import SollumType, items_from_enums, ArchetypeType, AssetType, TimeFlags, SOLLUMZ_UI_NAMES
+from ...sollumz_properties import SollumType, items_from_enums, ArchetypeType, AssetType, TimeFlags, SOLLUMZ_UI_NAMES, SollumzGame, MapEntityType
 from ...tools.utils import get_list_item
 from .mlo import EntitySetProperties, RoomProperties, PortalProperties, MloEntityProperties, TimecycleModifierProperties
 from .flags import ArchetypeFlags, MloFlags
@@ -202,6 +202,12 @@ class ArchetypeProperties(bpy.types.PropertyGroup, ExtensionsContainer):
     lod_dist: bpy.props.FloatProperty(name="Lod Distance", default=60, min=-1)
     flags: bpy.props.PointerProperty(
         type=ArchetypeFlags, name="Flags")
+    #RDR
+    load_flags: bpy.props.IntProperty(name="Load Flags")
+    avoidanceflags: bpy.props.IntProperty(name="Avoidance Flags")
+    guid: bpy.props.IntProperty(name="GUID")
+    unknown_1: bpy.props.EnumProperty(
+        items=items_from_enums(MapEntityType), name="Unknown 1")
     special_attribute: bpy.props.EnumProperty(
         name="Special Attribute", items=SpecialAttributeEnumItems, default=SpecialAttribute.NOTHING_SPECIAL.name)
     hd_texture_dist: bpy.props.FloatProperty(
@@ -308,6 +314,8 @@ class CMapTypesProperties(bpy.types.PropertyGroup):
         return item
 
     name: bpy.props.StringProperty(name="Name")
+    game: bpy.props.EnumProperty(
+        items=items_from_enums(SollumzGame), name="Game", default=SollumzGame.GTA)
     all_texture_dictionary: bpy.props.StringProperty(
         name="Texture Dictionary: ")
     all_lod_dist: bpy.props.FloatProperty(name="Lod Distance: ")
@@ -341,7 +349,6 @@ def register():
 
     bpy.types.Scene.ytyp_apply_transforms = bpy.props.BoolProperty(
         name="Apply Parent Transforms", description="Apply transforms to all assets when calculating Archetype extents")
-
 
 def unregister():
     del bpy.types.Scene.ytyps

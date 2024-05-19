@@ -1020,7 +1020,6 @@ def add_frag_glass_window_xml(
         logger.warning(f"Glass window '{group_xml.name}' requires 2 separate planes in mesh.")
         if len(mesh_planes) < 2:
             return  # need at least 2 planes to continue
-
     plane_a, plane_b = mesh_planes[:2]
     if len(plane_a) != 2 or len(plane_b) != 2:
         logger.warning(f"Glass window '{group_xml.name}' mesh planes need to be made up of 2 triangles each.")
@@ -1139,7 +1138,6 @@ def calc_frag_glass_window_bounds_offset(
     Returns tuple (offset_front, offset_back).
     """
     from mathutils.geometry import distance_point_to_plane, normal
-
     def _get_plane(a: Vector, b: Vector, c: Vector, d: Vector):
         plane_no = normal((a, b, c))
         plane_co = a

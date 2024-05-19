@@ -4,8 +4,8 @@ from typing import Optional
 from ..tools.blenderhelper import lod_level_enum_flag_prop_factory
 from ..sollumz_helper import find_sollumz_parent
 from ..cwxml.light_preset import LightPresetsFile
-from ..sollumz_properties import SOLLUMZ_UI_NAMES, items_from_enums, TextureUsage, TextureFormat, LODLevel, SollumType, LightType, FlagPropertyGroup, TimeFlags
-from ..ydr.shader_materials import shadermats
+from ..sollumz_properties import SOLLUMZ_UI_NAMES, SollumzGame, items_from_enums, TextureUsage, TextureFormat, LODLevel, SollumType, LightType, FlagPropertyGroup, TimeFlags
+from ..ydr.shader_materials import shadermats, rdr_shadermats
 from .render_bucket import RenderBucket, RenderBucketEnumItems
 from .light_flashiness import Flashiness, LightFlashinessEnumItems
 from bpy.app.handlers import persistent
@@ -90,12 +90,16 @@ class DrawableProperties(bpy.types.PropertyGroup):
         min=0, max=10000, default=9998, name="Lod Distance Low")
     lod_dist_vlow: bpy.props.FloatProperty(
         min=0, max=10000, default=9998, name="Lod Distance Vlow")
+    unknown_24: bpy.props.IntProperty(min=0, default=0, name="Unknown 24")
+    unknown_60: bpy.props.IntProperty(min=0, default=0, name="Unknown 60")
+    parent_bone_tag: bpy.props.IntProperty(min=0, default=0, name="Parent BoneTag")
 
     shader_order: bpy.props.PointerProperty(type=DrawableShaderOrder)
 
 
 class DrawableModelProperties(bpy.types.PropertyGroup):
     render_mask: bpy.props.IntProperty(name="Render Mask", default=255)
+    flags: bpy.props.IntProperty(name="Flags", default=0)
     sollum_lod: bpy.props.EnumProperty(
         items=items_from_enums(
             [LODLevel.HIGH, LODLevel.MEDIUM, LODLevel.LOW, LODLevel.VERYLOW]),
@@ -165,8 +169,16 @@ class TextureFlags(bpy.types.PropertyGroup):
     unk24: bpy.props.BoolProperty(name="UNK24", default=False)
 
 
+def updateEmbeddedTextureProperty(self, context):
+    if self.game_type == SollumzGame.RDR:
+        if self.embedded:
+            self.extra_flags = 402685954
+        else:
+            self.extra_flags = 0
+
 class TextureProperties(bpy.types.PropertyGroup):
-    embedded: bpy.props.BoolProperty(name="Embedded", default=False)
+    index: bpy.props.IntProperty(default=0)
+    embedded: bpy.props.BoolProperty(name="Embedded", default=False, update=updateEmbeddedTextureProperty)
     usage: bpy.props.EnumProperty(
         items=items_from_enums(TextureUsage),
         name="Usage",
@@ -180,6 +192,12 @@ class TextureProperties(bpy.types.PropertyGroup):
     )
 
     extra_flags: bpy.props.IntProperty(name="Extra Flags", default=0)
+
+    game_type: bpy.props.EnumProperty(
+        items=items_from_enums(SollumzGame),
+        name="Game Type",
+        default=SollumzGame.GTA
+    )
 
 
 class BoneFlag(bpy.types.PropertyGroup):
@@ -250,6 +268,7 @@ class BoneProperties(bpy.types.PropertyGroup):
 class ShaderMaterial(bpy.types.PropertyGroup):
     index: bpy.props.IntProperty("Index")
     name: bpy.props.StringProperty("Name")
+    game: bpy.props.StringProperty("Game")
 
 
 class LightProperties(bpy.types.PropertyGroup):
@@ -451,12 +470,21 @@ class LightFlags(FlagPropertyGroup, bpy.types.PropertyGroup):
 @persistent
 def on_file_loaded(_):
     # Handler sets the default value of the ShaderMaterials collection on blend file load
+    sollum_game_type = bpy.context.scene.sollum_shader_game_type
+    materials = shadermats
+    game = "sollumz_gta5"
+    
     bpy.context.scene.shader_materials.clear()
-    for index, mat in enumerate(shadermats):
+    if sollum_game_type == SollumzGame.RDR:
+        materials = rdr_shadermats
+        game = "sollumz_rdr3"
+        
+    for index, mat in enumerate(materials):
         item = bpy.context.scene.shader_materials.add()
         item.index = index
         item.name = mat.name
-
+        item.game = game
+   
     load_light_presets()
 
 
@@ -496,7 +524,6 @@ light_presets = LightPresetsFile()
 
 def load_light_presets():
     bpy.context.scene.light_presets.clear()
-
     path = get_light_presets_path()
     if not os.path.exists(path):
         path = get_defaut_light_presets_path()
@@ -533,7 +560,31 @@ def get_model_properties(model_obj: bpy.types.Object, lod_level: LODLevel) -> Dr
     return lod_mesh.drawable_model_properties
 
 
+def updateShaderList(self, context):
+    sollum_game_type = context.scene.sollum_shader_game_type
+    materials = shadermats
+    game = "sollumz_gta5"
+    
+    context.scene.shader_materials.clear()
+    if sollum_game_type == SollumzGame.RDR:
+        materials = rdr_shadermats
+        game = "sollumz_rdr3"
+        
+    for index, mat in enumerate(materials):
+        item = context.scene.shader_materials.add()
+        item.index = index
+        item.name = mat.name
+        item.game = game
+
 def register():
+    bpy.types.Scene.sollum_shader_game_type = bpy.props.EnumProperty(
+        items=items_from_enums(SollumzGame),
+        name="(HIDDEN)Sollumz Game",
+        description="Hidden property used to sync with global game selection",
+        default=SollumzGame.GTA,
+        options={"HIDDEN"},
+        update=updateShaderList
+    )
     bpy.types.Scene.shader_material_index = bpy.props.IntProperty(
         name="Shader Material Index")  # MAKE ENUM WITH THE MATERIALS NAMES
     bpy.types.Scene.shader_materials = bpy.props.CollectionProperty(
@@ -616,6 +667,7 @@ def register():
 
 
 def unregister():
+    del bpy.types.Scene.sollum_shader_game_type
     del bpy.types.ShaderNodeTexImage.sollumz_texture_name
     del bpy.types.Scene.shader_material_index
     del bpy.types.Scene.shader_materials

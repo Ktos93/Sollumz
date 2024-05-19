@@ -1,3 +1,4 @@
+from ..sollumz_properties import SollumzGame
 import bpy
 import numpy as np
 from numpy.typing import NDArray
@@ -31,7 +32,7 @@ class MeshBuilder:
         self._has_colors = any(
             "Colour" in name for name in vertex_arr.dtype.names)
 
-    def build(self):
+    def build(self, game: str):
         mesh = bpy.data.meshes.new(self.name)
         vert_pos = self.vertex_arr["Position"]
         faces = self.ind_arr.reshape((int(self.ind_arr.size / 3), 3))
@@ -76,7 +77,8 @@ class MeshBuilder:
     def set_mesh_normals(self, mesh: bpy.types.Mesh):
         mesh.polygons.foreach_set("use_smooth", [True] * len(mesh.polygons))
 
-        normals_normalized = [Vector(n).normalized() for n in self.vertex_arr["Normal"]]
+        normals_normalized = [Vector(n[:3]).normalized()
+                              for n in self.vertex_arr["Normal"]]
         mesh.normals_split_custom_set_from_vertices(normals_normalized)
 
         if bpy.app.version < (4, 1, 0):
@@ -103,30 +105,65 @@ class MeshBuilder:
 
             create_color_attr(mesh, colors[self.ind_arr])
 
-    def create_vertex_groups(self, obj: bpy.types.Object, bones: list[bpy.types.Bone]):
-        weights = self.vertex_arr["BlendWeights"] / 255
-        indices = self.vertex_arr["BlendIndices"]
-
+    def create_vertex_groups(self, obj: bpy.types.Object, bones: list[bpy.types.Bone], current_game: SollumzGame = SollumzGame.GTA, bone_mapping = None):
         vertex_groups: dict[int, bpy.types.VertexGroup] = {}
+
+        def get_bone_by_tag(tag):
+            bone_by_tag = None
+
+            for bone in bones:
+                bone_tag = bone.bone_properties.tag
+                if bone_tag == tag:
+                    bone_by_tag = bone
+                    break
+            if bone_by_tag is None:
+                raise Exception(f"Unable to find bone with tag {tag} to create vertex group")
+            return bone_by_tag
+
 
         def create_group(bone_index: int):
             bone_name = f"UNKNOWN_BONE.{bone_index}"
 
-            if bones and bone_index < len(bones):
-                bone_name = bones[bone_index].name
+            if current_game == SollumzGame.GTA:
+                if bones and bone_index < len(bones):
+                    bone_name = bones[bone_index].name
+            elif current_game == SollumzGame.RDR:
+                if bone_mapping != None and len(bone_mapping) > 0:
+                    if bone_index > len(bone_mapping):
+                        raise Exception(f"Unable to get bone mapping as index {bone_index} is out of range in {bone_mapping}")
+                    tag = bone_mapping[bone_index]
+                    bone = get_bone_by_tag(tag)
+                    bone_name = bone.name
+                else:
+                    if bones and bone_index < len(bones):
+                        bone_name = bones[bone_index].name
+            
+            vgroup = obj.vertex_groups.get(bone_name)
+            if vgroup != None:
+                return vgroup
+            else:
+                return obj.vertex_groups.new(name=bone_name)
 
-            return obj.vertex_groups.new(name=bone_name)
+        def create_weights(weights, indices):
+            for vert_ind, bone_inds in enumerate(indices):
+                for i, bone_ind in enumerate(bone_inds):
+                    weight = weights[vert_ind][i]
 
-        for vert_ind, bone_inds in enumerate(indices):
-            for i, bone_ind in enumerate(bone_inds):
-                weight = weights[vert_ind][i]
+                    if weight == 0 and bone_ind == 0:
+                        continue
 
-                if weight == 0 and bone_ind == 0:
-                    continue
+                    if bone_ind not in vertex_groups:
+                        vertex_groups[bone_ind] = create_group(bone_ind)
 
-                if bone_ind not in vertex_groups:
-                    vertex_groups[bone_ind] = create_group(bone_ind)
+                    vgroup = vertex_groups[bone_ind]
 
-                vgroup = vertex_groups[bone_ind]
+                    vgroup.add((vert_ind,), weight, "ADD")
+    
+        weights = self.vertex_arr["BlendWeights"] / 255
+        indices = self.vertex_arr["BlendIndices"]
+        create_weights(weights, indices)
 
-                vgroup.add((vert_ind,), weight, "ADD")
+        if current_game == SollumzGame.RDR:
+            weights2 = self.vertex_arr["BlendWeights1"] / 255
+            indices2 = self.vertex_arr["BlendIndices1"]
+            create_weights(weights2, indices2)

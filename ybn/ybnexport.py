@@ -4,7 +4,7 @@ from typing import Optional, TypeVar, Callable, Type
 import numpy as np
 
 from ..sollumz_helper import get_parent_inverse
-from ..tools.blenderhelper import get_pose_inverse
+from ..tools.blenderhelper import get_pose_inverse, remove_number_suffix
 from ..cwxml.bound import (
     BoundFile,
     Bound,
@@ -22,32 +22,71 @@ from ..cwxml.bound import (
     PolySphere,
     PolyCapsule,
     PolyCylinder,
-    Material
+    Material,
+    RDRBoundFile
 )
 from ..tools.utils import get_max_vector_list, get_min_vector_list, get_matrix_without_scale
 from ..tools.meshhelper import (get_bound_center_from_bounds, calculate_volume,
                                 calculate_inertia, get_corners_from_extents, get_sphere_radius, get_inner_sphere_radius,
                                 get_combined_bound_box)
-from ..sollumz_properties import MaterialType, SOLLUMZ_UI_NAMES, SollumType, BOUND_POLYGON_TYPES
+from ..sollumz_properties import MaterialType, SOLLUMZ_UI_NAMES, SollumType, BOUND_POLYGON_TYPES, SollumzGame
 from ..sollumz_preferences import get_export_settings
 from .. import logger
-from .properties import CollisionMatFlags, get_collision_mat_raw_flags, BoundFlags
+from .properties import CollisionMatFlags, RDRBoundFlags, get_collision_mat_raw_flags, BoundFlags
+from ..cwxml import bound
 
 T_Bound = TypeVar("T_Bound", bound=Bound)
 T_BoundChild = TypeVar("T_BoundChild", bound=BoundChild)
 T_PolyCylCap = TypeVar("T_PolyCylCap", bound=PolyCylinder | PolyCapsule)
 
 MAX_VERTICES = 32767
-
+current_game = SollumzGame.GTA
 
 def export_ybn(obj: bpy.types.Object, filepath: str) -> bool:
     export_settings = get_export_settings()
 
-    bounds = BoundFile()
+    global current_game
+    current_game = obj.sollum_game_type
+    
+    if current_game == SollumzGame.GTA:
+        bounds = BoundFile()
+        composite = create_composite_xml(
+            obj, export_settings.auto_calculate_inertia, export_settings.auto_calculate_volume)
+        bounds.composite = composite
+    elif current_game == SollumzGame.RDR:
+        bounds = RDRBoundFile("RDR2Bounds")
 
-    composite = create_composite_xml(
-        obj, export_settings.auto_calculate_inertia, export_settings.auto_calculate_volume)
-    bounds.composite = composite
+        composite = create_composite_xml(
+            obj, export_settings.auto_calculate_inertia, export_settings.auto_calculate_volume)
+
+        bb_min_all = [[],[],[]]
+        bb_max_all = [[],[],[]]
+
+        for comp in composite.children:
+            boxmin = comp.box_min
+            boxmax = comp.box_max
+
+            bb_min_all[0].append(boxmin.x)
+            bb_min_all[1].append(boxmin.y)
+            bb_min_all[2].append(boxmin.z)
+
+            bb_max_all[0].append(boxmax.x)
+            bb_max_all[1].append(boxmax.y)
+            bb_max_all[2].append(boxmax.z)
+        
+        calcmin = Vector((min(bb_min_all[0]), min(bb_min_all[1]), min(bb_min_all[2])))
+        calcmax = Vector((max(bb_max_all[0]), min(bb_max_all[1]), min(bb_max_all[2])))
+
+        bounds.box_min = calcmin
+        bounds.box_max = calcmax
+        bounds.box_center = get_bound_center_from_bounds(bounds.box_min, bounds.box_max)
+        bounds.sphere_center = bounds.box_center
+        bounds.sphere_radius = get_sphere_radius(
+            bounds.box_max, bounds.box_center)
+
+        bounds.mass = obj.bound_properties.mass
+        bounds.inertia = Vector(obj.bound_properties.inertia)
+        bounds.children = composite.children
 
     bounds.write_xml(filepath)
     return True
@@ -57,9 +96,13 @@ def create_composite_xml(
     obj: bpy.types.Object,
     auto_calc_inertia: bool = False,
     auto_calc_volume: bool = False,
-    out_child_obj_to_index: dict[bpy.types.Object, int] = None
+    out_child_obj_to_index: dict[bpy.types.Object, int] = None,
+    embedded_col: bool = False
 ) -> BoundComposite:
     composite_xml = BoundComposite()
+    
+    if embedded_col and obj.sollum_game_type == SollumzGame.RDR:
+        composite_xml = RDRBoundFile()
 
     for child in obj.children:
         child_xml = create_bound_xml(
@@ -67,7 +110,6 @@ def create_composite_xml(
 
         if child_xml is None:
             continue
-
         if out_child_obj_to_index is not None:
             out_child_obj_to_index[child] = len(composite_xml.children)
         composite_xml.children.append(child_xml)
@@ -141,7 +183,6 @@ def bound_geom_has_mats(geom_obj: bpy.types.Object):
 def init_bound_child_xml(bound_xml: T_BoundChild, obj: bpy.types.Object, auto_calc_inertia: bool = False, auto_calc_volume: bool = False):
     """Initialize ``bound_xml`` bound child properties from object blender properties."""
     bound_xml.composite_transform = get_composite_transforms(obj).transposed()
-
     if obj.type == "MESH":
         bbmin, bbmax = get_bound_extents(obj)
     elif obj.type == "EMPTY":
@@ -167,10 +208,12 @@ def init_bound_xml(bound_xml: T_Bound, obj: bpy.types.Object, auto_calc_inertia:
     if auto_calc_inertia:
         bound_xml.inertia = calculate_inertia(
             bound_xml.box_min, bound_xml.box_max)
-
-    if auto_calc_volume:
-        bound_xml.volume = calculate_volume(
-            bound_xml.box_min, bound_xml.box_max)
+    if current_game == SollumzGame.GTA:
+        if auto_calc_volume:
+            bound_xml.volume = calculate_volume(
+                bound_xml.box_min, bound_xml.box_max)
+    elif current_game == SollumzGame.RDR:
+        bound_xml.mass = obj.bound_properties.mass
 
     return bound_xml
 
@@ -179,7 +222,9 @@ def create_bound_geometry_xml(obj: bpy.types.Object, auto_calc_inertia: bool = F
     geom_xml = init_bound_child_xml(
         BoundGeometry(), obj, auto_calc_inertia, auto_calc_volume)
     set_bound_geom_xml_properties(geom_xml, obj)
-    geom_xml.material_index = 0
+
+    if current_game == SollumzGame.GTA:
+        geom_xml.material_index = 0
 
     create_bound_geom_xml_data(geom_xml, obj)
 
@@ -188,8 +233,10 @@ def create_bound_geometry_xml(obj: bpy.types.Object, auto_calc_inertia: bool = F
 
 def create_bvh_xml(obj: bpy.types.Object, auto_calc_inertia: bool = False, auto_calc_volume: bool = False):
     geom_xml = init_bound_child_xml(
-        BoundGeometryBVH(), obj, auto_calc_inertia, auto_calc_volume)
-    geom_xml.material_index = 0
+            BoundGeometryBVH(), obj, auto_calc_inertia, auto_calc_volume)
+    
+    if current_game == SollumzGame.GTA:
+        geom_xml.material_index = 0
 
     create_bound_geom_xml_data(geom_xml, obj)
 
@@ -199,7 +246,9 @@ def create_bvh_xml(obj: bpy.types.Object, auto_calc_inertia: bool = False, auto_
 def create_bound_geom_xml_data(geom_xml: BoundGeometry | BoundGeometryBVH, obj: bpy.types.Object):
     """Create the vertices, polygons, and vertex colors of a ``BoundGeometry`` or ``BoundGeometryBVH`` from ``obj``."""
     create_bound_xml_polys(geom_xml, obj)
-    geom_xml.geometry_center = center_verts_to_geometry(geom_xml)
+    geometry_center = center_verts_to_geometry(geom_xml)
+    if current_game == SollumzGame.GTA:
+        geom_xml.geometry_center = geometry_center
 
     num_vertices = len(geom_xml.vertices)
 
@@ -216,7 +265,10 @@ def center_verts_to_geometry(geom_xml: BoundGeometry | BoundGeometryBVH):
     """Position verts such that the origin is at their center of geometry. Returns the center of geometry."""
     verts = np.array([tuple(v) for v in geom_xml.vertices], dtype=np.float32)
 
-    geom_center = Vector(np.average(verts, axis=0))
+    if current_game == SollumzGame.GTA:
+        geom_center = Vector(np.average(verts, axis=0))
+    elif current_game == SollumzGame.RDR:
+        geom_center = get_bound_center_from_bounds(geom_xml.box_min, geom_xml.box_max)
     geom_xml.vertices = [
         Vector(vert) - geom_center for vert in geom_xml.vertices]
 
@@ -224,7 +276,8 @@ def center_verts_to_geometry(geom_xml: BoundGeometry | BoundGeometryBVH):
         geom_xml.vertices_2 = [
             Vector(vert) - geom_center for vert in geom_xml.vertices_2]
 
-    return Vector(geom_center)
+    if current_game == SollumzGame.GTA:
+        return Vector(geom_center)
 
 
 def create_bound_xml_polys(geom_xml: BoundGeometry | BoundGeometryBVH, obj: bpy.types.Object):
@@ -235,20 +288,23 @@ def create_bound_xml_polys(geom_xml: BoundGeometry | BoundGeometryBVH, obj: bpy.
     def get_vert_index(vert: Vector, vert_color: Optional[tuple[int, int, int, int]] = None):
         default_vert_color = (255, 255, 255, 255)
 
-        # These are safety checks in case the user mixed poly primitives and poly meshes with color attributes
-        # This doesn't occur in original .ybns, if they have vertex colors, only poly triangles (meshes) are used.
-        if vert_color is not None and len(geom_xml.vertex_colors) != len(geom_xml.vertices):
-            # This vertex has color but previous ones didn't, assign a default color to all previous vertices
-            for _ in range(len(geom_xml.vertex_colors), len(geom_xml.vertices)):
-                geom_xml.vertex_colors.append(default_vert_color)
+        if current_game == SollumzGame.GTA:
+            # These are safety checks in case the user mixed poly primitives and poly meshes with color attributes
+            # This doesn't occur in original .ybns, if they have vertex colors, only poly triangles (meshes) are used.
+            if vert_color is not None and len(geom_xml.vertex_colors) != len(geom_xml.vertices):
+                # This vertex has color but previous ones didn't, assign a default color to all previous vertices
+                for _ in range(len(geom_xml.vertex_colors), len(geom_xml.vertices)):
+                    geom_xml.vertex_colors.append(default_vert_color)
 
-        if vert_color is None and len(geom_xml.vertex_colors) != 0:
-            # There are already vertex colors in this geometry, assign a default color
-            vert_color = default_vert_color
+            if vert_color is None and len(geom_xml.vertex_colors) != 0:
+                # There are already vertex colors in this geometry, assign a default color
+                vert_color = default_vert_color
 
-        # Tuple to uniquely identify this vertex and remove duplicates
-        # Must be tuple since Vector is not hashable
-        vertex_id = (*vert, *(vert_color or default_vert_color))
+            # Tuple to uniquely identify this vertex and remove duplicates
+            # Must be tuple since Vector is not hashable
+            vertex_id = (*vert, *(vert_color or default_vert_color))
+        elif current_game == SollumzGame.RDR:
+            vertex_id = vert.to_tuple()
 
         if vertex_id in ind_by_vert:
             return ind_by_vert[vertex_id]
@@ -256,7 +312,7 @@ def create_bound_xml_polys(geom_xml: BoundGeometry | BoundGeometryBVH, obj: bpy.
         vert_ind = len(ind_by_vert)
         ind_by_vert[vertex_id] = vert_ind
         geom_xml.vertices.append(Vector(vert))
-        if vert_color is not None:
+        if vert_color is not None and current_game == SollumzGame.GTA:
             geom_xml.vertex_colors.append(vert_color)
 
         return vert_ind
@@ -320,13 +376,19 @@ def create_bound_xml_poly_shape(obj: bpy.types.Object, geom_xml: BoundGeometryBV
         geom_xml.polygons.append(sphere_xml)
 
     elif obj.sollum_type == SollumType.BOUND_POLY_CYLINDER:
+        poly_type = PolyCylinder
+        if current_game == SollumzGame.RDR:
+            poly_type = "Cyl"
         cylinder_xml = create_poly_cylinder_capsule_xml(
-            PolyCylinder, obj, transforms, get_vert_index, get_mat_index)
+            poly_type, obj, transforms, get_vert_index, get_mat_index)
         geom_xml.polygons.append(cylinder_xml)
 
     elif obj.sollum_type == SollumType.BOUND_POLY_CAPSULE:
+        poly_type = PolyCapsule
+        if current_game == SollumzGame.RDR:
+            poly_type = "Cap"
         capsule_xml = create_poly_cylinder_capsule_xml(
-            PolyCapsule, obj, transforms, get_vert_index, get_mat_index)
+            poly_type, obj, transforms, get_vert_index, get_mat_index)
         geom_xml.polygons.append(capsule_xml)
 
 
@@ -364,103 +426,150 @@ def create_poly_xml_triangles(mesh: bpy.types.Mesh, transforms: Matrix, get_vert
     """Create all bound polygon triangle XML objects for this BoundGeometry/BVH."""
     triangles: list[PolyTriangle] = []
 
-    color_attr = mesh.color_attributes[0] if len(mesh.color_attributes) > 0 else None
-    if color_attr is not None and (color_attr.domain != "CORNER" or color_attr.data_type != "BYTE_COLOR"):
-        color_attr = None
+    if current_game == SollumzGame.GTA:
+        color_attr = mesh.color_attributes[0] if len(mesh.color_attributes) > 0 else None
+        if color_attr is not None and (color_attr.domain != "CORNER" or color_attr.data_type != "BYTE_COLOR"):
+            color_attr = None
 
-    for tri in mesh.loop_triangles:
-        triangle = PolyTriangle()
-        mat = mesh.materials[tri.material_index]
-        triangle.material_index = get_mat_index(mat)
+        for tri in mesh.loop_triangles:
+            triangle = PolyTriangle()
+            mat = mesh.materials[tri.material_index]
+            triangle.material_index = get_mat_index(mat)
 
-        tri_indices: list[int] = []
+            tri_indices: list[int] = []
 
-        for loop_idx in tri.loops:
-            loop = mesh.loops[loop_idx]
+            for loop_idx in tri.loops:
+                loop = mesh.loops[loop_idx]
 
-            vert_pos = transforms @ mesh.vertices[loop.vertex_index].co
-            vert_color = color_attr.data[loop_idx].color_srgb if color_attr is not None else None
-            if vert_color is not None:
-                vert_color = (vert_color[0] * 255, vert_color[1] * 255, vert_color[2] * 255, vert_color[3] * 255)
-            vert_ind = get_vert_index(vert_pos, vert_color=vert_color)
+                vert_pos = transforms @ mesh.vertices[loop.vertex_index].co
+                vert_color = color_attr.data[loop_idx].color_srgb if color_attr is not None else None
+                if vert_color is not None:
+                    vert_color = (vert_color[0] * 255, vert_color[1] * 255, vert_color[2] * 255, vert_color[3] * 255)
+                vert_ind = get_vert_index(vert_pos, vert_color=vert_color)
 
-            tri_indices.append(vert_ind)
+                tri_indices.append(vert_ind)
 
-        triangle.v1 = tri_indices[0]
-        triangle.v2 = tri_indices[1]
-        triangle.v3 = tri_indices[2]
+            triangle.v1 = tri_indices[0]
+            triangle.v2 = tri_indices[1]
+            triangle.v3 = tri_indices[2]
 
-        triangles.append(triangle)
+            triangles.append(triangle)
 
+    elif current_game == SollumzGame.RDR:
+        for tri in mesh.loop_triangles:
+            mat = mesh.materials[tri.material_index]
+            tri_indices: list[int] = []
+
+            for loop_idx in tri.loops:
+                loop = mesh.loops[loop_idx]
+                vert_pos = transforms @ mesh.vertices[loop.vertex_index].co
+                vert_ind = get_vert_index(vert_pos)
+                tri_indices.append(vert_ind)
+
+            tri_poly_string = f"Tri {get_mat_index(mat)} {tri_indices[0]} {tri_indices[1]} {tri_indices[2]}"
+            triangles.append(tri_poly_string)
+   
     return triangles
 
 
 def create_poly_box_xml(obj: bpy.types.Object, transforms: Matrix, get_vert_index: Callable[[Vector], int], get_mat_index: Callable[[bpy.types.Material], int]):
-    box_xml = PolyBox()
-    box_xml.material_index = get_mat_index(obj.active_material)
-    indices = []
-    bound_box = [transforms @ Vector(pos) for pos in obj.bound_box]
-    corners = [bound_box[0], bound_box[5], bound_box[2], bound_box[7]]
-    for vert in corners:
-        indices.append(get_vert_index(vert))
+    if current_game == SollumzGame.GTA:
+        box_xml = PolyBox()
+        box_xml.material_index = get_mat_index(obj.active_material)
+        indices = []
+        bound_box = [transforms @ Vector(pos) for pos in obj.bound_box]
+        corners = [bound_box[0], bound_box[5], bound_box[2], bound_box[7]]
+        for vert in corners:
+            indices.append(get_vert_index(vert))
 
-    box_xml.v1 = indices[0]
-    box_xml.v2 = indices[1]
-    box_xml.v3 = indices[2]
-    box_xml.v4 = indices[3]
+        box_xml.v1 = indices[0]
+        box_xml.v2 = indices[1]
+        box_xml.v3 = indices[2]
+        box_xml.v4 = indices[3]
 
-    return box_xml
-
+        return box_xml
+    elif current_game == SollumzGame.RDR:
+        indices = []
+        bound_box = [transforms @ Vector(pos) for pos in obj.bound_box]
+        corners = [bound_box[0], bound_box[5], bound_box[2], bound_box[7]]
+        for vert in corners:
+            indices.append(get_vert_index(vert))
+        return f"Box {get_mat_index(obj.active_material)} {indices[0]} {indices[1]} {indices[2]} {indices[3]}"
 
 def create_poly_sphere_xml(obj: bpy.types.Object, transforms: Matrix, get_vert_index: Callable[[Vector], int], get_mat_index: Callable[[bpy.types.Material], int]):
-    sphere_xml = PolySphere()
-    sphere_xml.material_index = get_mat_index(obj.active_material)
-    vert_ind = get_vert_index(transforms.translation)
-    sphere_xml.v = vert_ind
+    if current_game == SollumzGame.GTA:
+        sphere_xml = PolySphere()
+        sphere_xml.material_index = get_mat_index(obj.active_material)
+        vert_ind = get_vert_index(transforms.translation)
+        sphere_xml.v = vert_ind
 
-    # Assuming bounding box forms a cube. Get the sphere enclosed by the cube
-    # scale = transforms.to_scale()
-    bbmin = get_min_vector_list(obj.bound_box)
-    bbmax = get_max_vector_list(obj.bound_box)
+        # Assuming bounding box forms a cube. Get the sphere enclosed by the cube
+        # scale = transforms.to_scale()
+        bbmin = get_min_vector_list(obj.bound_box)
+        bbmax = get_max_vector_list(obj.bound_box)
 
-    radius = (bbmax.x - bbmin.x) / 2
+        radius = (bbmax.x - bbmin.x) / 2
 
-    sphere_xml.radius = radius
+        sphere_xml.radius = radius
 
-    return sphere_xml
+        return sphere_xml
+    elif current_game == SollumzGame.RDR:
+        vert_ind = get_vert_index(transforms.translation)
+        bbmin = get_min_vector_list(obj.bound_box)
+        bbmax = get_max_vector_list(obj.bound_box)
+        radius = (bbmax.x - bbmin.x) / 2
+        return f"Sph {get_mat_index(obj.active_material)} {vert_ind} {radius}"
 
 
 def create_poly_cylinder_capsule_xml(poly_type: Type[T_PolyCylCap], obj: bpy.types.Object, transforms: Matrix, get_vert_index: Callable[[Vector], int], get_mat_index: Callable[[bpy.types.Material], int]):
-    poly_xml = poly_type()
+    if current_game == SollumzGame.GTA:
+        poly_xml = poly_type()
 
-    position = transforms.translation
+        position = transforms.translation
 
-    poly_xml.material_index = get_mat_index(obj.active_material)
+        poly_xml.material_index = get_mat_index(obj.active_material)
 
-    # Only apply scale so we can get the oriented bounding box
-    # scale = transforms.to_scale()
-    bbmin = get_min_vector_list(obj.bound_box)
-    bbmax = get_max_vector_list(obj.bound_box)
+        # Only apply scale so we can get the oriented bounding box
+        # scale = transforms.to_scale()
+        bbmin = get_min_vector_list(obj.bound_box)
+        bbmax = get_max_vector_list(obj.bound_box)
 
-    height = bbmax.z - bbmin.z
-    # Assumes X and Y scale are uniform
-    radius = (bbmax.x - bbmin.x) / 2
+        height = bbmax.z - bbmin.z
+        # Assumes X and Y scale are uniform
+        radius = (bbmax.x - bbmin.x) / 2
 
-    if poly_type is PolyCapsule:
-        height = height - (radius * 2)
+        if poly_type is PolyCapsule:
+            height = height - (radius * 2)
 
-    vertical = Vector((0, 0, height / 2))
-    vertical.rotate(transforms.to_euler("XYZ"))
+        vertical = Vector((0, 0, height / 2))
+        vertical.rotate(transforms.to_euler("XYZ"))
 
-    v1 = position - vertical
-    v2 = position + vertical
+        v1 = position - vertical
+        v2 = position + vertical
 
-    poly_xml.v1 = get_vert_index(v1)
-    poly_xml.v2 = get_vert_index(v2)
+        poly_xml.v1 = get_vert_index(v1)
+        poly_xml.v2 = get_vert_index(v2)
 
-    poly_xml.radius = radius
+        poly_xml.radius = radius
 
-    return poly_xml
+        return poly_xml
+    elif current_game == SollumzGame.RDR:
+        position = transforms.translation
+        bbmin = get_min_vector_list(obj.bound_box)
+        bbmax = get_max_vector_list(obj.bound_box)
+        height = bbmax.z - bbmin.z
+        radius = (bbmax.x - bbmin.x) / 2
+        
+        if poly_type == "Cap":
+            height = height - (radius * 2)
+
+        vertical = Vector((0, 0, height / 2))
+        vertical.rotate(transforms.to_euler("XYZ"))
+
+        v1 = position - vertical
+        v2 = position + vertical
+
+        return f"{poly_type} {get_mat_index(obj.active_material)} {get_vert_index(v1)} {get_vert_index(v2)} {radius}"
 
 
 def create_col_mat_xml(mat: bpy.types.Material):
@@ -473,15 +582,22 @@ def set_composite_xml_flags(bound_xml: BoundChild, obj: bpy.types.Object):
     def set_flags(prop_name: str):
         flags_data_block = getattr(obj, prop_name)
         flags_xml = getattr(bound_xml, prop_name)
-
-        for flag_name in BoundFlags.__annotations__:
+        if current_game == SollumzGame.GTA:
+            flags = BoundFlags.__annotations__
+        elif current_game == SollumzGame.RDR:
+            flags = RDRBoundFlags.__annotations__
+        for flag_name in flags:
             if flag_name not in flags_data_block or flags_data_block[flag_name] == False:
                 continue
 
             flags_xml.append(flag_name.upper())
-
-    set_flags("composite_flags1")
-    set_flags("composite_flags2")
+    if current_game == SollumzGame.GTA:
+        set_flags("composite_flags1")
+        set_flags("composite_flags2")
+    elif current_game == SollumzGame.RDR:
+        set_flags("type_flags")
+        set_flags("include_flags")
+        bound_xml.unk_11h = obj.bound_properties.unk_11h
 
 
 def get_composite_transforms(bound_obj: bpy.types.Object):
@@ -499,22 +615,35 @@ def set_bound_col_mat_xml_properties(bound_xml: Bound, mat: bpy.types.Material):
     if mat is None or mat.sollum_type != MaterialType.COLLISION:
         return
 
-    bound_xml.material_index = mat.collision_properties.collision_index
-    bound_xml.procedural_id = mat.collision_properties.procedural_id
-    bound_xml.room_id = mat.collision_properties.room_id
-    bound_xml.ped_density = mat.collision_properties.ped_density
-    bound_xml.material_color_index = mat.collision_properties.material_color_index
-    flags_lo, flags_hi = get_collision_mat_raw_flags(mat.collision_flags)
-    bound_xml.unk_flags = flags_lo
-    bound_xml.poly_flags = flags_hi
+    if current_game == SollumzGame.GTA:
+        bound_xml.material_index = mat.collision_properties.collision_index
+        bound_xml.procedural_id = mat.collision_properties.procedural_id
+        bound_xml.ped_density = mat.collision_properties.ped_density
+        bound_xml.room_id = mat.collision_properties.room_id
+        bound_xml.material_color_index = mat.collision_properties.material_color_index
+        flags_lo, flags_hi = get_collision_mat_raw_flags(mat.collision_flags)
+        bound_xml.unk_flags = flags_lo
+        bound_xml.poly_flags = flags_hi
+    elif current_game == SollumzGame.RDR:
+        bound_xml.material_name = remove_number_suffix(mat.name)
+        for flag_name in CollisionMatFlags.__annotations__.keys():
+            if flag_name not in mat.collision_flags or not mat.collision_flags[flag_name]:
+                continue
+            bound_xml.material_flags.append(f"FLAG_{flag_name.upper()}")
 
 
 def set_col_mat_xml_properties(mat_xml: Material, mat: bpy.types.Material):
-    mat_xml.type = mat.collision_properties.collision_index
+    if current_game == SollumzGame.GTA:
+        mat_xml.type = mat.collision_properties.collision_index
+        mat_xml.ped_density = mat.collision_properties.ped_density
+        mat_xml.material_color_index = mat.collision_properties.material_color_index
+    elif current_game == SollumzGame.RDR:
+        mat_xml.name = remove_number_suffix(mat.name)
+    
     mat_xml.procedural_id = mat.collision_properties.procedural_id
     mat_xml.room_id = mat.collision_properties.room_id
-    mat_xml.ped_density = mat.collision_properties.ped_density
-    mat_xml.material_color_index = mat.collision_properties.material_color_index
+    mat_xml.unk = mat.collision_properties.unk
+    
     for flag_name in CollisionMatFlags.__annotations__.keys():
         if flag_name not in mat.collision_flags or not mat.collision_flags[flag_name]:
             continue

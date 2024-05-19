@@ -90,7 +90,7 @@ class AttributesList(ItemTypeList):
 
         def __init__(self):
             super().__init__()
-            self.value = ValueProperty("Value", 0)
+            self.value = ValueProperty("Value", True)
 
     class Vector3Attribute(Attribute):
         type = "Vector3"

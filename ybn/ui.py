@@ -1,14 +1,19 @@
 import bpy
-from .properties import BoundFlags, CollisionProperties, CollisionMatFlags, BoundProperties
-from ..sollumz_properties import MaterialType, SollumType, BOUND_TYPES, BOUND_POLYGON_TYPES
-from .collision_materials import collisionmats
+from .properties import BoundFlags, RDRBoundFlags, CollisionProperties, CollisionMatFlags, BoundProperties
+from ..sollumz_properties import MaterialType, SollumType, SollumzGame, BOUND_TYPES, BOUND_POLYGON_TYPES
+from .collision_materials import collisionmats, rdr_collisionmats
 from ..sollumz_ui import SOLLUMZ_PT_OBJECT_PANEL, SOLLUMZ_PT_MAT_PANEL
 from . import operators as ybn_ops
 
 
-def generate_flags(layout, prop):
+def generate_flags(layout, prop, game):
     grid = layout.grid_flow(columns=4, even_columns=True, even_rows=True)
-    for prop_name in BoundFlags.__annotations__:
+    flags = None
+    if game == SollumzGame.GTA:
+        flags = BoundFlags.__annotations__
+    elif game == SollumzGame.RDR:
+        flags = RDRBoundFlags.__annotations__
+    for prop_name in flags:
         grid.prop(prop, prop_name)
 
 
@@ -128,12 +133,22 @@ class SOLLUMZ_PT_BOUND_FLAGS_PANEL(bpy.types.Panel):
 
     def draw(self, context):
         obj = context.active_object
+        obj_game_type = obj.sollum_game_type
         layout = self.layout
         layout.label(text="Type Flags")
-        generate_flags(layout, obj.composite_flags1)
+
+        if obj_game_type == SollumzGame.GTA:
+            generate_flags(layout, obj.composite_flags1, obj_game_type)
+        elif obj_game_type == SollumzGame.RDR:
+            generate_flags(layout, obj.type_flags, obj_game_type)
+
         layout.separator_spacer()
         layout.label(text="Include Flags")
-        generate_flags(layout, obj.composite_flags2)
+
+        if obj_game_type == SollumzGame.GTA:
+            generate_flags(layout, obj.composite_flags2, obj_game_type)
+        elif obj_game_type == SollumzGame.RDR:
+            generate_flags(layout, obj.include_flags, obj_game_type)
 
 
 class SOLLUMZ_PT_MATERIAL_COL_FLAGS_PANEL(bpy.types.Panel):
@@ -169,6 +184,9 @@ class SOLLUMZ_UL_COLLISION_MATERIALS_LIST(bpy.types.UIList):
         self, context, layout, data, item, icon, active_data, active_propname, index
     ):
         name = collisionmats[item.index].ui_name
+        if item.game == SollumzGame.RDR:
+            name = rdr_collisionmats[item.index].ui_name
+        
         if self.layout_type in {"DEFAULT", "COMPACT"}:
             row = layout.row()
             row.label(text=name, icon="MATERIAL")
@@ -184,13 +202,40 @@ class SOLLUMZ_UL_FLAG_PRESET_LIST(bpy.types.UIList):
     def draw_item(
         self, context, layout, data, item, icon, active_data, active_propname, index
     ):
+
+        if item.game == SollumzGame.RDR:
+            tag = "RDR"  
+        else:
+            tag = "GTA"  
+        
         if self.layout_type in {"DEFAULT", "COMPACT"}:
             row = layout.row()
-            row.label(text=item.name, icon="BOOKMARKS")
+            row.label(text = f"[{tag}] {item.name}", icon="BOOKMARKS")
         elif self.layout_type in {"GRID"}:
             layout.alignment = "CENTER"
             layout.prop(item, "name",
-                        text=item.name, emboss=False, icon="BOOKMARKS")
+                        text=f"[{tag}] {item.name}", emboss=False, icon="BOOKMARKS")
+
+    def filter_items(self, context, data, propname):
+        items = getattr(data, propname)
+        ordered = [item.index for item in items]
+        filtered = [self.bitflag_filter_item] * len(items)
+
+        selected = context.selected_objects
+
+        if selected and selected[0]:
+            for i, item in enumerate(items): 
+                if hasattr(item, 'game') and hasattr(selected[0], 'sollum_game_type'):
+                    if item.game != selected[0].sollum_game_type and selected[0].sollum_type != SollumType.NONE: 
+                        filtered[i] &= ~self.bitflag_filter_item
+        else:
+            sollum_game_type = context.scene.sollum_game_type
+            for i, item in enumerate(items): 
+                if hasattr(item, 'game'):
+                    if item.game != sollum_game_type: 
+                        filtered[i] &= ~self.bitflag_filter_item
+
+        return filtered, ordered
 
 
 class SOLLUMZ_PT_COLLISION_TOOL_PANEL(bpy.types.Panel):

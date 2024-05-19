@@ -1,5 +1,6 @@
 from abc import ABC as AbstractClass, abstractmethod
 from collections import defaultdict
+from ..sollumz_properties import SollumzGame
 from mathutils import Vector
 from xml.etree import ElementTree as ET
 from .element import (
@@ -10,9 +11,12 @@ from .element import (
     ListProperty,
     MatrixProperty,
     ValueProperty,
-    VectorProperty
+    VectorProperty,
+    TextProperty
 )
+from bpy import context
 
+current_game = SollumzGame.GTA
 
 class YBN:
 
@@ -20,7 +24,16 @@ class YBN:
 
     @staticmethod
     def from_xml_file(filepath):
-        return BoundFile.from_xml_file(filepath)
+        global current_game
+        tree = ET.parse(filepath)
+        gameTag = tree.getroot().tag
+        
+        if "RDR2" in gameTag:
+            current_game = SollumzGame.RDR
+            return RDRBoundFile("RDR2Bounds").from_xml_file(filepath)
+        else:
+            current_game = SollumzGame.GTA
+            return BoundFile.from_xml_file(filepath)
 
     @staticmethod
     def write_xml(bound_file, filepath):
@@ -32,7 +45,31 @@ class BoundFile(ElementTree):
 
     def __init__(self):
         super().__init__()
+        global current_game
+        current_game = SollumzGame.GTA
+        self.game = current_game
         self.composite = BoundComposite()
+
+
+class RDRBoundFile(ElementTree):
+    tag_name = "Bounds"
+
+    def __init__(self, tag_name: str = "Bounds"):
+        self.tag_name = tag_name
+        super().__init__()
+        global current_game
+        current_game = SollumzGame.RDR
+        self.game = current_game
+        self.type = AttributeProperty("type", "Composite")
+        self.version = AttributeProperty("version", 1)
+        self.box_min = VectorProperty("BoxMin")
+        self.box_max = VectorProperty("BoxMax")
+        self.box_center = VectorProperty("BoxCenter")
+        self.sphere_center = VectorProperty("SphereCenter")
+        self.sphere_radius = ValueProperty("SphereRadius", 0.0)
+        self.mass = ValueProperty("Mass", 0)
+        self.inertia = VectorProperty("Inertia")
+        self.children = BoundList()
 
 
 class Bound(ElementTree, AbstractClass):
@@ -46,16 +83,20 @@ class Bound(ElementTree, AbstractClass):
         self.sphere_center = VectorProperty("SphereCenter")
         self.sphere_radius = ValueProperty("SphereRadius", 0.0)
         self.margin = ValueProperty("Margin", 0)
-        self.volume = ValueProperty("Volume", 0)
         self.inertia = VectorProperty("Inertia")
-        self.material_index = ValueProperty("MaterialIndex", 0)
-        self.material_color_index = ValueProperty("MaterialColourIndex", 0)
-        self.procedural_id = ValueProperty("ProceduralID", 0)
-        self.room_id = ValueProperty("RoomID", 0)
-        self.ped_density = ValueProperty("PedDensity", 0)
-        self.unk_flags = ValueProperty("UnkFlags", 0)
-        self.poly_flags = ValueProperty("PolyFlags", 0)
-        self.unk_type = ValueProperty("UnkType", 1)
+        if current_game == SollumzGame.GTA:
+            self.volume = ValueProperty("Volume", 0)
+            self.material_index = ValueProperty("MaterialIndex", 0)
+            self.material_color_index = ValueProperty("MaterialColourIndex", 0)
+            self.procedural_id = ValueProperty("ProceduralID", 0)
+            self.room_id = ValueProperty("RoomID", 0)
+            self.ped_density = ValueProperty("PedDensity", 0)
+            self.unk_flags = ValueProperty("UnkFlags", 0)
+            self.poly_flags = ValueProperty("PolyFlags", 0)
+            self.unk_type = ValueProperty("UnkType", 1)
+        elif current_game == SollumzGame.RDR:
+            self.mass = ValueProperty("Mass", 0)
+            self.unk_11h = ValueProperty("Unknown_11h", 0)
 
 
 class BoundComposite(Bound):
@@ -76,9 +117,17 @@ class BoundChild(Bound, AbstractClass):
     def __init__(self):
         super().__init__()
         self.type = AttributeProperty("type", self.type)
-        self.composite_transform = MatrixProperty("CompositeTransform")
-        self.composite_flags1 = FlagsProperty("CompositeFlags1")
-        self.composite_flags2 = FlagsProperty("CompositeFlags2")
+
+        if current_game == SollumzGame.GTA:
+            self.composite_transform = MatrixProperty("CompositeTransform")
+            self.composite_flags1 = FlagsProperty("CompositeFlags1")
+            self.composite_flags2 = FlagsProperty("CompositeFlags2")
+        elif current_game == SollumzGame.RDR:
+            self.material_name = TextProperty("MaterialName", "")
+            self.material_flags = FlagsProperty("MaterialFlags")
+            self.composite_transform = MatrixProperty("Transform")
+            self.type_flags = FlagsProperty("TypeFlags")
+            self.include_flags = FlagsProperty("IncludeFlags")
 
 
 class BoundBox(BoundChild):
@@ -199,11 +248,15 @@ class BoundGeometryBVH(BoundChild):
 
     def __init__(self):
         super().__init__()
-        self.geometry_center = VectorProperty("GeometryCenter")
         self.materials = MaterialsList()
         self.vertices = VerticesProperty("Vertices")
-        self.vertex_colors = VertexColorProperty("VertexColours")
-        self.polygons = Polygons()
+        if current_game == SollumzGame.GTA:
+            self.geometry_center = VectorProperty("GeometryCenter")
+            self.vertex_colors = VertexColorProperty("VertexColours")
+            self.polygons = Polygons()
+        elif current_game == SollumzGame.RDR:
+            self.version = AttributeProperty("version", 1)
+            self.polygons = PolygonListProperty()
 
 
 class BoundGeometry(BoundGeometryBVH):
@@ -221,6 +274,12 @@ class BoundGeometry(BoundGeometryBVH):
 class BoundList(ListProperty):
     list_type = BoundChild
     tag_name = "Children"
+
+    def __init__(self):
+        if current_game == SollumzGame.RDR:
+            self.tag_name = "Bounds"
+            self.version = AttributeProperty("version", 1)
+        super().__init__(self.tag_name)
 
     @staticmethod
     def from_xml(element: ET.Element):
@@ -254,13 +313,17 @@ class Material(ElementTree):
 
     def __init__(self):
         super().__init__()
-        self.type = ValueProperty("Type", 0)
-        self.procedural_id = ValueProperty("ProceduralID", 0)
         self.room_id = ValueProperty("RoomID", 0)
-        self.ped_density = ValueProperty("PedDensity", 0)
         self.flags = FlagsProperty()
-        self.material_color_index = ValueProperty("MaterialColourIndex", 0)
         self.unk = ValueProperty("Unk", 0)
+        if current_game == SollumzGame.GTA:
+            self.type = ValueProperty("Type", 0)
+            self.procedural_id = ValueProperty("ProceduralID", 0)
+            self.ped_density = ValueProperty("PedDensity", 0)
+            self.material_color_index = ValueProperty("MaterialColourIndex", 0)
+        if current_game == SollumzGame.RDR:
+            self.name = TextProperty("Name")
+            self.procedural_id = ValueProperty("ProcID", 0)
 
 
 class MaterialsList(ListProperty):
@@ -385,3 +448,42 @@ class PolyCylinder(Polygon):
         self.v1 = AttributeProperty("v1", 0)
         self.v2 = AttributeProperty("v2", 1)
         self.radius = AttributeProperty("radius", 0)
+
+
+class PolygonListProperty(ElementProperty):
+    value_types = (list)
+
+    def __init__(self, tag_name: str = "Polygons", value=None):
+        super().__init__(tag_name, value or [])
+
+    @staticmethod
+    def from_xml(element: ET.Element):
+        new = PolygonListProperty(element.tag, [])
+        text = element.text.strip().split("\n")
+        if len(text) > 0:
+            for line in text:
+                line = line.strip().split(" ")
+                if len(line) > 0:
+                    poly = [line[0]]
+                    for item in line[1:]:
+                        if (poly[0] == 'Cyl' and len(poly) == 4) or \
+                          (poly[0] == 'Sph' and len(poly) == 3) or \
+                          (poly[0] == 'Cap' and len(poly) == 4) or \
+                          (poly[0] == "Cyl" and len(poly) == 4):
+                            poly.append(float(item))
+                        else:
+                            poly.append(int(item))
+                    new.value.append(poly)
+        return new
+    
+    def to_xml(self):
+        element = ET.Element(self.tag_name)
+        element.text = "\n"
+
+        if len(self.value) == 0:
+            return None
+
+        for poly in self.value:
+            element.text += (poly + "\n")
+
+        return element
